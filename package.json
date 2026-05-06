@@ -1,0 +1,19 @@
+{
+  "name": "hotel-whatsapp-bot",
+  "version": "2.0.0",
+  "description": "WhatsApp hotel availability bot",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "dotenv": "^16.0.0",
+    "express": "^4.18.2",
+    "form-data": "^4.0.0",
+    "googleapis": "^140.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
