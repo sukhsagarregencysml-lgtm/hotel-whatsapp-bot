@@ -39,4 +39,37 @@ async function checkAvailability({ ciDate, coDate, rooms }) {
   }
 }
 
-module.exports = { checkAvailability };
+async function saveReservation({ guestName, guestMobile, male, female, kids, plan, tariff, rooms, checkinDate, checkoutDate, roomType }) {
+  console.log('Saving reservation to Stayezee:', guestName, checkinDate, checkoutDate);
+  try {
+    const form = new FormData();
+    form.append('guest_name', guestName || 'Guest');
+    form.append('guest_mobile', guestMobile || '');
+    form.append('male', String(male || 1));
+    form.append('female', String(female || 0));
+    form.append('kids', String(kids || 0));
+    form.append('plan', plan || 'CP');
+    form.append('tariff', String(tariff || 0));
+    form.append('rooms', String(rooms || 1));
+    form.append('checkin_date', checkinDate);
+    form.append('checkout_date', checkoutDate);
+    form.append('room_type', roomType || 'Deluxe');
+
+    const res = await axios.post(
+      'https://india.stayezeepms.co.in/FO/API/saveReservation',
+      form,
+      {
+        headers: { 'X-Hotel-ID': HOTEL_ID, ...form.getHeaders() },
+        timeout: 15000,
+      }
+    );
+
+    console.log('Stayezee saveReservation response:', JSON.stringify(res.data));
+    return { success: true, data: res.data };
+  } catch (err) {
+    console.error('Stayezee saveReservation error:', err.response?.data || err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+module.exports = { checkAvailability, saveReservation };

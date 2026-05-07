@@ -7,7 +7,7 @@ const {
   sendRoomAvailable, sendNotAvailable, sendConfirmed, sendAskPlan,
 } = require("./whatsapp");
 const { parseEnquiry } = require("./parser");
-const { checkAvailability } = require("./stayezee");
+const { checkAvailability, saveReservation } = require("./stayezee");
 const { isAgent, getAgent, addAgent, removeAgent, listAgents } = require("./agents");
 const { getRate, getSeason } = require("./rates");
 
@@ -161,10 +161,94 @@ async function handleIncoming({ from, text, msgId }) {
     }
   }
 
+  // Awaiting guest name for Stayezee
+  if (session.step === "awaiting_guest_name") {
+    session.guestName = text.trim();
+    session.step = "awaiting_guest_mobile";
+    await sendMessage(from,
+      `Dear *${agent.name}*,\n\nThank you! Now please share the *guest mobile number* (with country code):\n\nExample: *919876543210*`
+    );
+    return;
+  }
+
+  // Awaiting guest mobile for Stayezee
+  if (session.step === "awaiting_guest_mobile") {
+    const mobile = text.replace(/\D/g, '');
+    session.guestMobile = mobile.startsWith('91') ? mobile : '91' + mobile;
+    session.step = "idle";
+
+    // Now save to Stayezee and send confirmation
+    try {
+      const ciFormatted = session.ciDate ? session.ciDate.split('-').reverse().join('-') : '';
+      const coFormatted = session.coDate ? session.coDate.split('-').reverse().join('-') : '';
+
+      const stayezeeRes = await saveReservation({
+        guestName: session.guestName,
+        guestMobile: session.guestMobile,
+        male: 1,
+        female: 0,
+        kids: 0,
+        plan: session.plan || 'CP',
+        tariff: session.rate || 0,
+        rooms: session.rooms || 1,
+        checkinDate: ciFormatted,
+        checkoutDate: coFormatted,
+        roomType: session.roomType || 'Deluxe'
+      });
+
+      if (stayezeeRes.success) {
+        console.log('Reservation saved to Stayezee:', JSON.stringify(stayezeeRes.data));
+      } else {
+        console.error('Failed to save to Stayezee:', stayezeeRes.error);
+      }
+    } catch (stayErr) {
+      console.error('Stayezee save error:', stayErr.message);
+    }
+
+    await sendConfirmed(from, session);
+    return;
+  }
+
   // Awaiting YES/NO
   if (session.step === "awaiting_confirm") {
     if (["YES", "Y", "CONFIRM", "OK", "HAAN", "HA"].includes(t)) {
+      session.step = "awaiting_guest_name";
+      await sendMessage(from,
+        `Dear *${agent.name}*,\n\nGreat! Please share the *guest full name* for the reservation:`
+      );
+      return;
+    }
+    if (["YES", "Y", "CONFIRM", "OK", "HAAN", "HA"].includes(t)) {
       session.step = "idle";
+
+      // Save reservation to Stayezee PMS
+      try {
+        const ciFormatted = session.ciDate ? session.ciDate.split('-').reverse().join('-') : '';
+        const coFormatted = session.coDate ? session.coDate.split('-').reverse().join('-') : '';
+
+        const stayezeeRes = await saveReservation({
+          guestName: session.guestName || agent.name + ' Guest',
+          guestMobile: session.guestMobile || from,
+          male: session.male || 1,
+          female: session.female || 0,
+          kids: session.kids || 0,
+          plan: session.plan || 'CP',
+          tariff: session.rate || 0,
+          rooms: session.rooms || 1,
+          checkinDate: ciFormatted,
+          checkoutDate: coFormatted,
+          roomType: session.roomType || 'Deluxe'
+        });
+
+        if (stayezeeRes.success) {
+          console.log('Reservation saved to Stayezee:', stayezeeRes.data);
+        } else {
+          console.error('Failed to save to Stayezee:', stayezeeRes.error);
+        }
+      } catch (stayErr) {
+        console.error('Stayezee save error:', stayErr.message);
+      }
+
       await sendConfirmed(from, session);
       return;
     }
