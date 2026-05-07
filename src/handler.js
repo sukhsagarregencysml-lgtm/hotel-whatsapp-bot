@@ -175,7 +175,41 @@ async function handleIncoming({ from, text, msgId }) {
   if (session.step === "awaiting_guest_mobile") {
     const mobile = text.replace(/\D/g, '');
     session.guestMobile = mobile.startsWith('91') ? mobile : '91' + mobile;
+    session.step = "awaiting_extra_bed";
+    await sendMessage(from,
+      `Dear *${agent.name}*,\n\nDo you need an *extra bed*?\n\n` +
+      `Reply:\n` +
+      `*1* - Yes, 1 extra bed (above 10 yrs) - Rs.800/night\n` +
+      `*2* - Yes, child bed (10 yrs & below) - FREE\n` +
+      `*NO* - No extra bed needed`
+    );
+    return;
+  }
+
+  // Awaiting extra bed response
+  if (session.step === "awaiting_extra_bed") {
+    if (t === '1') {
+      session.extraBed = 1;
+      session.extraBedCharge = 800;
+      session.extraBedType = 'Adult (above 10 yrs)';
+    } else if (t === '2') {
+      session.extraBed = 1;
+      session.extraBedCharge = 0;
+      session.extraBedType = 'Child (10 yrs & below)';
+    } else {
+      session.extraBed = 0;
+      session.extraBedCharge = 0;
+      session.extraBedType = null;
+    }
     session.step = "idle";
+
+    // Calculate total with extra bed
+    const nights = session.nights || 1;
+    const rooms = session.rooms || 1;
+    const baseRate = session.rate || 0;
+    const extraTotal = (session.extraBedCharge || 0) * nights;
+    const roomTotal = baseRate * rooms * nights;
+    const grandTotal = roomTotal + extraTotal;
 
     // Now save to Stayezee and send confirmation
     try {
@@ -189,7 +223,7 @@ async function handleIncoming({ from, text, msgId }) {
         female: 0,
         kids: 0,
         plan: session.plan || 'CP',
-        tariff: session.rate || 0,
+        tariff: (session.rate || 0) + (session.extraBedCharge || 0),
         rooms: session.rooms || 1,
         checkinDate: ciFormatted,
         checkoutDate: coFormatted,
@@ -233,7 +267,7 @@ async function handleIncoming({ from, text, msgId }) {
           female: session.female || 0,
           kids: session.kids || 0,
           plan: session.plan || 'CP',
-          tariff: session.rate || 0,
+          tariff: (session.rate || 0) + (session.extraBedCharge || 0),
           rooms: session.rooms || 1,
           checkinDate: ciFormatted,
           checkoutDate: coFormatted,
