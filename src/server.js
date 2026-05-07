@@ -131,3 +131,24 @@ app.post("/send-checkout", async (req, res) => {
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));
+
+// -- POST /test-stayezee -- test saveReservation directly ------
+app.post("/test-stayezee", async (req, res) => {
+  try {
+    const { saveReservation } = require("./stayezee");
+    const result = await saveReservation({
+      guestName: req.body.guestName || "Test Guest",
+      guestMobile: req.body.guestMobile || "919816003322",
+      male: 1, female: 0, kids: 0,
+      plan: req.body.plan || "CP",
+      tariff: req.body.tariff || 4100,
+      rooms: req.body.rooms || 1,
+      checkinDate: req.body.checkinDate || "10-05-2026",
+      checkoutDate: req.body.checkoutDate || "12-05-2026",
+      roomType: req.body.roomType || "Deluxe"
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
