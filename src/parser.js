@@ -22,10 +22,28 @@ function parseEnquiry(text) {
   else result.plan = null;
 
   // ── Room type ──────────────────────────────────────────────────────────
-  if (/honey/i.test(text)) result.roomType = "honeymoon";
+  // Parse multiple room types - e.g "3 deluxe 2 super deluxe"
+  const roomTypes = [];
+  
+  // Match patterns like "3 super deluxe", "2 deluxe", "1 honeymoon"
+  const multiRoomRegex = /(\d+)\s*(super\s*deluxe|honeymoon|honey|deluxe)/gi;
+  let match;
+  while ((match = multiRoomRegex.exec(text)) !== null) {
+    const count = parseInt(match[1]);
+    const type = match[2].toLowerCase().replace(/\s+/g,'');
+    const normalized = type.includes('honey') ? 'honeymoon' : 
+                       type.includes('super') ? 'superdeluxe' : 'deluxe';
+    roomTypes.push({ type: normalized, count });
+  }
+
+  if (roomTypes.length > 0) {
+    result.roomTypes = roomTypes;
+    result.roomType = roomTypes[0].type;
+    result.rooms = roomTypes.reduce((sum, r) => sum + r.count, 0);
+  } else if (/honey/i.test(text)) result.roomType = "honeymoon";
   else if (/super\s*deluxe/i.test(text)) result.roomType = "superdeluxe";
   else if (/deluxe/i.test(text)) result.roomType = "deluxe";
-  else result.roomType = null; // will ask later
+  else result.roomType = null;
 
   // ── Dates ──────────────────────────────────────────────────────────────
   const dates = extractDates(text);
