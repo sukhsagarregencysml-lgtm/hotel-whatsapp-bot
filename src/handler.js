@@ -390,11 +390,62 @@ async function processEnquiry(from, session) {
 
   if (result.available) {
     session.step = "awaiting_confirm";
-    await sendRoomAvailable(from, session);
+
+    const { getRate } = require("./rates");
+    const nights = session.nights || 1;
+    const plan = session.plan || "CP";
+
+    let rateMsg = `Dear *${session.agentName}*,\n\n`;
+
+    if (session.roomTypes && session.roomTypes.length > 1) {
+      // Multiple room types
+      rateMsg += `Rooms available! Here are the rates:\n\n`;
+      let grandTotal = 0;
+
+      for (const rt of session.roomTypes) {
+        const rateInfo = getRate(rt.type, plan, session.ciDate, session.agentCategory);
+        const rate = rateInfo?.rate || 0;
+        const roomTotal = rate * rt.count * nights;
+        grandTotal += roomTotal;
+        const typeName = rt.type === "honeymoon" ? "Honeymoon" :
+                        rt.type === "superdeluxe" ? "Super Deluxe" : "Deluxe";
+
+        rateMsg += `*${rt.count} x ${typeName}*\n`;
+        rateMsg += `  Without extra bed: *Rs.${rate.toLocaleString()}/night*\n`;
+        rateMsg += `  With extra bed adult (>10 yrs): *Rs.${(rate+800).toLocaleString()}/night*\n`;
+        rateMsg += `  With extra bed child (<=10 yrs): *Rs.${rate.toLocaleString()}/night* (FREE)\n\n`;
+      }
+
+      rateMsg += `Check-in: *${fmtDate(session.ciDate)}*\n`;
+      rateMsg += `Check-out: *${fmtDate(session.coDate)}*\n`;
+      rateMsg += `Nights: *${nights}*\nPlan: *${plan}*\n`;
+      rateMsg += `Total (without extra bed): *Rs.${grandTotal.toLocaleString()}*\n\n`;
+      rateMsg += `Reply *YES* to confirm or *NO* to cancel`;
+
+    } else {
+      // Single room type
+      const rate = session.rate || 0;
+      const rooms = session.rooms || 1;
+      const typeName = session.roomType === "honeymoon" ? "Honeymoon" :
+                      session.roomType === "superdeluxe" ? "Super Deluxe" : "Deluxe";
+
+      rateMsg += `Room available!\n\n`;
+      rateMsg += `*${rooms} x ${typeName}*\n`;
+      rateMsg += `Without extra bed: *Rs.${rate.toLocaleString()}/night*\n`;
+      rateMsg += `With extra bed adult (>10 yrs): *Rs.${(rate+800).toLocaleString()}/night*\n`;
+      rateMsg += `With extra bed child (<=10 yrs): *Rs.${rate.toLocaleString()}/night* (FREE)\n\n`;
+      rateMsg += `Check-in: *${fmtDate(session.ciDate)}*\n`;
+      rateMsg += `Check-out: *${fmtDate(session.coDate)}*\n`;
+      rateMsg += `Nights: *${nights}*\nPlan: *${plan}*\n`;
+      rateMsg += `Total (without extra bed): *Rs.${(rate * rooms * nights).toLocaleString()}*\n\n`;
+      rateMsg += `Reply *YES* to confirm or *NO* to cancel`;
+    }
+
+    await sendMessage(from, rateMsg);
     await sendReminder(ADMIN_PHONE,
-      `✅ *Available*\nAgent: ${session.agentName} (${from}) [Cat ${session.agentCategory}]\n` +
-      `📅 ${session.ciDate} → ${session.coDate}\n🛏 ${session.rooms} ${session.roomTypeName || ""} | ${session.plan}\n` +
-      `💰 Rate: ₹${session.rate} (${session.season} season)\nWaiting for confirmation.`
+      `OK *Available*\nAgent: ${session.agentName} (${from}) [Cat ${session.agentCategory}]\n` +
+      `${session.ciDate} -> ${session.coDate}\n${session.rooms} rooms | ${plan}\n` +
+      `Rate: Rs.${session.rate} (${session.season} season)\nWaiting for confirmation.`
     );
   } else {
     session.step = "idle";
