@@ -78,8 +78,31 @@ function parseEnquiry(text) {
 
   // -- Dates --------------------------------------------------------------
   const dates = extractDates(text);
-  if (dates.length >= 2) { result.ciDate = toISO(dates[0]); result.coDate = toISO(dates[1]); }
-  else if (dates.length === 1) { result.ciDate = toISO(dates[0]); result.coDate = null; }
+  if (dates.length >= 2) {
+    // Always sort: smaller date = check-in, larger date = check-out
+    const d1 = new Date(dates[0].year, dates[0].month, dates[0].day);
+    const d2 = new Date(dates[1].year, dates[1].month, dates[1].day);
+    if (d1 <= d2) {
+      result.ciDate = toISO(dates[0]);
+      result.coDate = toISO(dates[1]);
+    } else {
+      result.ciDate = toISO(dates[1]);
+      result.coDate = toISO(dates[0]);
+    }
+  }
+  else if (dates.length === 1) {
+    result.ciDate = toISO(dates[0]);
+    // Check if nights mentioned - e.g "10 may 2 nights"
+    const nightsMatch = text.match(/(\d+)\s*(?:night|nite|nights)/i);
+    if (nightsMatch) {
+      const nights = parseInt(nightsMatch[1]);
+      const ciD = new Date(dates[0].year, dates[0].month, dates[0].day);
+      ciD.setDate(ciD.getDate() + nights);
+      result.coDate = toISO({ day: ciD.getDate(), month: ciD.getMonth(), year: ciD.getFullYear() });
+    } else {
+      result.coDate = null;
+    }
+  }
   else return null;
 
   return result;
