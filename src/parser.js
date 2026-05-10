@@ -78,7 +78,23 @@ function parseEnquiry(text) {
 
   // -- Dates --------------------------------------------------------------
   const dates = extractDates(text);
-  if (dates.length >= 2) {
+
+  // Try to detect explicit checkin/checkout keywords
+  const ciKeyword = /(?:check[\s-]?in|checkin|ci|c\/i|arrival|from)\s+(\d{1,2})(?:st|nd|rd|th)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
+  const coKeyword = /(?:check[\s-]?out|checkout|co|c\/o|departure|to|till|until|upto)\s+(\d{1,2})(?:st|nd|rd|th)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
+
+  const ciMatch = text.match(ciKeyword);
+  const coMatch = text.match(coKeyword);
+
+  if (ciMatch && coMatch) {
+    const ciDay = parseInt(ciMatch[1]);
+    const ciMon = MONTHS[ciMatch[2].toLowerCase().slice(0,3)];
+    const coDay = parseInt(coMatch[1]);
+    const coMon = MONTHS[coMatch[2].toLowerCase().slice(0,3)];
+    const yr = new Date().getFullYear();
+    result.ciDate = toISO({ day: ciDay, month: ciMon, year: yr });
+    result.coDate = toISO({ day: coDay, month: coMon, year: yr });
+  } else if (dates.length >= 2) {
     // Always sort: smaller date = check-in, larger date = check-out
     const d1 = new Date(dates[0].year, dates[0].month, dates[0].day);
     const d2 = new Date(dates[1].year, dates[1].month, dates[1].day);
@@ -93,7 +109,7 @@ function parseEnquiry(text) {
   else if (dates.length === 1) {
     result.ciDate = toISO(dates[0]);
     // Check if nights mentioned - e.g "10 may 2 nights"
-    const nightsMatch = text.match(/(\d+)\s*(?:night|nite|nights)/i);
+    const nightsMatch = text.match(/(\d+)\s*(?:n\b|night|nite|nights)/i);
     if (nightsMatch) {
       const nights = parseInt(nightsMatch[1]);
       const ciD = new Date(dates[0].year, dates[0].month, dates[0].day);
