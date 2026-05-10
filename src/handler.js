@@ -179,8 +179,8 @@ async function handleIncoming({ from, text, msgId }) {
     await sendMessage(from,
       `Dear *${agent.name}*,\n\nDo you need an *extra bed*?\n\n` +
       `Reply:\n` +
-      `*1* - Yes, 1 extra bed (above 10 yrs) - Rs.800/night\n` +
-      `*2* - Yes, child bed (10 yrs & below) - FREE\n` +
+      `*1* - Yes, extra bed (above 5 yrs) - Rs.800/night\n` +
+      `*2* - Yes, extra bed (under 5 yrs) - FREE\n` +
       `*NO* - No extra bed needed`
     );
     return;
@@ -191,11 +191,11 @@ async function handleIncoming({ from, text, msgId }) {
     if (t === '1') {
       session.extraBed = 1;
       session.extraBedCharge = 800;
-      session.extraBedType = 'Adult (above 10 yrs)';
+      session.extraBedType = 'Adult (above 5 yrs)';
     } else if (t === '2') {
       session.extraBed = 1;
       session.extraBedCharge = 0;
-      session.extraBedType = 'Child (10 yrs & below)';
+      session.extraBedType = 'Child (5 yrs & below)';
     } else {
       session.extraBed = 0;
       session.extraBedCharge = 0;
@@ -412,8 +412,8 @@ async function processEnquiry(from, session) {
 
         rateMsg += `*${rt.count} x ${typeName}*\n`;
         rateMsg += `  Without extra bed: *Rs.${rate.toLocaleString()}/night*\n`;
-        rateMsg += `  With extra bed adult (>10 yrs): *Rs.${(rate+800).toLocaleString()}/night*\n`;
-        rateMsg += `  With extra bed child (<=10 yrs): *Rs.${rate.toLocaleString()}/night* (FREE)\n\n`;
+        rateMsg += `  With extra bed (above 5 yrs): *Rs.${(rate+800).toLocaleString()}/night*\n`;
+        rateMsg += `  With extra bed (under 5 yrs): *Rs.${rate.toLocaleString()}/night* (FREE)\n\n`;
       }
 
       rateMsg += `Check-in: *${fmtDate(session.ciDate)}*\n`;
@@ -432,8 +432,8 @@ async function processEnquiry(from, session) {
       rateMsg += `Room available!\n\n`;
       rateMsg += `*${rooms} x ${typeName}*\n`;
       rateMsg += `Without extra bed: *Rs.${rate.toLocaleString()}/night*\n`;
-      rateMsg += `With extra bed adult (>10 yrs): *Rs.${(rate+800).toLocaleString()}/night*\n`;
-      rateMsg += `With extra bed child (<=10 yrs): *Rs.${rate.toLocaleString()}/night* (FREE)\n\n`;
+      rateMsg += `With extra bed (above 5 yrs): *Rs.${(rate+800).toLocaleString()}/night*\n`;
+      rateMsg += `With extra bed (under 5 yrs): *Rs.${rate.toLocaleString()}/night* (FREE)\n\n`;
       rateMsg += `Check-in: *${fmtDate(session.ciDate)}*\n`;
       rateMsg += `Check-out: *${fmtDate(session.coDate)}*\n`;
       rateMsg += `Nights: *${nights}*\nPlan: *${plan}*\n`;
