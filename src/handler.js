@@ -157,13 +157,46 @@ async function handleIncoming({ from, text, msgId }) {
   // Step: awaiting confirm
   if (session.step === "awaiting_confirm") {
     if (["YES","Y","CONFIRM","OK","HAAN","HA"].includes(t)) {
+      // Clear timeout if exists
+      if (session.timeoutId) {
+        clearTimeout(session.timeoutId);
+        session.timeoutId = null;
+      }
+
+      // Double check availability before confirming
+      await sendMessage(from, `Dear *${agent.name}*,\n\nVerifying room availability...`);
+
+      try {
+        const recheck = await checkAvailability({
+          ciDate: session.ciDate,
+          coDate: session.coDate,
+          rooms: session.rooms || 1,
+        });
+
+        if (!recheck.available) {
+          session.step = "idle";
+          await sendMessage(from,
+            `Dear *${agent.name}*,\n\nSorry! The rooms were just booked by someone else.\n\n` +
+            `Please try different dates or room types. 🙏`
+          );
+          return;
+        }
+      } catch(err) {
+        console.error("Recheck error:", err.message);
+        // Continue if recheck fails
+      }
+
       session.step = "awaiting_guest_name";
       await sendMessage(from,
-        `Dear *${agent.name}*,\n\nPlease share the *guest full name*:`
+        `Dear *${agent.name}*,\n\nRooms confirmed! Please share the *guest full name*:`
       );
       return;
     }
     if (["NO","N","CANCEL","NAHI","NAH"].includes(t)) {
+      if (session.timeoutId) {
+        clearTimeout(session.timeoutId);
+        session.timeoutId = null;
+      }
       session.step = "idle";
       await sendMessage(from,
         `Dear *${agent.name}*,\n\nUnderstood! The hold has been released. Feel free to enquire again anytime. 🙏`
@@ -392,6 +425,22 @@ async function checkAndRespond(from, agent, session) {
 
       session.rate = grandTotal / (session.rooms * nights);
       await sendMessage(from, rateMsg);
+
+      // Set 5 minute timeout - release if no reply
+      if (session.timeoutId) clearTimeout(session.timeoutId);
+      session.timeoutId = setTimeout(async () => {
+        if (sessions[from]?.step === "awaiting_confirm") {
+          sessions[from].step = "idle";
+          sessions[from].timeoutId = null;
+          try {
+            await sendMessage(from,
+              `Dear *${agent.name}*,\n\nYour booking hold has been *released* due to no response.\n\n` +
+              `Rooms are now available for other bookings.\n\n` +
+              `Please send a new enquiry if you still need rooms. 🙏`
+            );
+          } catch(e) { console.error("Timeout message error:", e.message); }
+        }
+      }, 5 * 60 * 1000); // 5 minutes
 
       await sendReminder(ADMIN_PHONE,
         `OK *Available*\nAgent: ${agent.name} (${from}) [Cat ${agent.category}]\n` +
