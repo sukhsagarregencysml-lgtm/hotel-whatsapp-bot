@@ -347,11 +347,9 @@ async function handleIncoming({ from, text, msgId }) {
 async function checkAndRespond(from, agent, session) {
   try {
     const result = await checkAvailability({
-      hotelId: process.env.HOTEL_ID,
-      roomType: session.roomType,
-      checkinDate: session.ciDate,
-      checkoutDate: session.coDate,
-      roomsNeeded: session.rooms,
+      ciDate: session.ciDate,
+      coDate: session.coDate,
+      rooms: session.rooms || 1,
     });
 
     const nights = Math.round((new Date(session.coDate) - new Date(session.ciDate)) / 86400000);
