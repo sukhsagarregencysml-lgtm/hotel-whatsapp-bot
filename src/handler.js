@@ -77,6 +77,11 @@ async function handleIncoming({ from, text, msgId }) {
     return;
   }
 
+  // Clear any guest session if this person is actually an agent
+  if (guestSessions[from]) {
+    delete guestSessions[from];
+  }
+
   // -- MULTI-STEP AGENT SESSION HANDLERS ----------------------------------
   const session = sessions[from] || { step: "idle" };
   sessions[from] = session;
@@ -297,17 +302,8 @@ async function handleIncoming({ from, text, msgId }) {
   }
 
   // Agent selected menu option
-  if (t === "1" && session.step !== "awaiting_confirm") {
-    await sendMessage(from,
-      `Dear *${agent.name}*,\n\nTo check availability, send:\n\n` +
-      `*[rooms] [type] [plan] [dates]*\n\n` +
-      `Examples:\n` +
-      `• 2 deluxe CP 10 july 12 july\n` +
-      `• 2 dlx 1 honey MAP 22july 25july\n` +
-      `• 3 sdlx MAPAI 10aug 2nights\n\n` +
-      `Room types: *deluxe/dlx, super deluxe/sdlx, honeymoon/honey*\n` +
-      `Plans: *CP, MAP, MAPAI, EP*`
-    );
+  if ((t === "1" || t === "MENU" || t === "0" || t === "HOME") && session.step !== "awaiting_confirm") {
+    await sendAgentMenu(from, agent.name);
     return;
   }
 
@@ -379,14 +375,28 @@ async function handleIncoming({ from, text, msgId }) {
 
 async function checkAndRespond(from, agent, session) {
   try {
+    const nights = Math.round((new Date(session.coDate) - new Date(session.ciDate)) / 86400000);
+    session.nights = nights;
+
+    // Max 3 nights limit
+    if (nights > 3) {
+      session.step = "idle";
+      await sendMessage(from,
+        `Dear *${agent.name}*,\n\n` +
+        `Online bookings are available for *up to 3 nights* only.\n\n` +
+        `For longer stays (${nights} nights), please contact our admin directly:\n\n` +
+        `📞 *+91 98160 03322*\n` +
+        `📧 info@sukhsagarregency.com\n\n` +
+        `Our team will assist you with special rates for extended stays. 🙏`
+      );
+      return;
+    }
+
     const result = await checkAvailability({
       ciDate: session.ciDate,
       coDate: session.coDate,
       rooms: session.rooms || 1,
     });
-
-    const nights = Math.round((new Date(session.coDate) - new Date(session.ciDate)) / 86400000);
-    session.nights = nights;
 
     if (result.available) {
       session.step = "awaiting_confirm";
@@ -468,17 +478,25 @@ async function confirmAndSave(from, agent, session) {
     const ciFormatted = session.ciDate ? session.ciDate.split("-").reverse().join("-") : "";
     const coFormatted = session.coDate ? session.coDate.split("-").reverse().join("-") : "";
 
-    await saveReservation({
+    const stayezeeRes = await saveReservation({
       guestName: session.guestName || "Guest",
       guestMobile: session.guestMobile || from,
       male: 1, female: 0, kids: 0,
       plan: session.plan || "CP",
-      tariff: (session.rate || 0) + (session.extraBedCharge || 0),
+      tariff: Math.round((session.rate || 0)),
+      extra_bed: session.extraBed || 0,
+      extra_bed_charge: session.extraBedCharge || 0,
       rooms: session.rooms || 1,
       checkinDate: ciFormatted,
       checkoutDate: coFormatted,
       roomType: session.roomType || "Deluxe",
     });
+
+    // Get Stayezee confirmation number
+    const stayezeeData = stayezeeRes?.data;
+    const confirmNo = stayezeeData?.booking_id || stayezeeData?.confirmation_no || 
+                      stayezeeData?.reservation_no || stayezeeData?.id || 
+                      stayezeeData?.message || "Generated";
 
     const nights = session.nights || 1;
     const rooms = session.rooms || 1;
@@ -486,12 +504,20 @@ async function confirmAndSave(from, agent, session) {
     const extraCharge = (session.extraBedCharge || 0) * nights;
     const roomTotal = rate * rooms * nights;
     const grandTotal = roomTotal + extraCharge;
+    const typeName = session.roomType === "honeymoon" ? "Honeymoon" :
+                     session.roomType === "superdeluxe" ? "Super Deluxe" : "Deluxe";
 
+    // WhatsApp confirmation to agent
     let confirmMsg =
-      `Dear *${agent.name}*,\n\nBooking *CONFIRMED* for *${session.guestName}*!\n\n` +
+      `Dear *${agent.name}*,\n\n` +
+      `Booking *CONFIRMED!* \n\n` +
+      `Confirmation No: *${confirmNo}*\n\n` +
+      `Guest: *${session.guestName}*\n` +
+      `Mobile: *${session.guestMobile}*\n\n` +
       `Check-in: *${fmtDate(session.ciDate)}*\n` +
       `Check-out: *${fmtDate(session.coDate)}*\n` +
-      `Rooms: *${rooms}*\n` +
+      `Nights: *${nights}*\n` +
+      `Rooms: *${rooms} x ${typeName}*\n` +
       `Plan: *${session.plan}*\n` +
       `Rate: *Rs.${Math.round(rate).toLocaleString()}/night*\n`;
 
@@ -499,21 +525,60 @@ async function confirmAndSave(from, agent, session) {
       confirmMsg += `Extra bed: *${session.extraBedType}* - Rs.${session.extraBedCharge}/night\n`;
     }
 
-    confirmMsg +=
-      `\nRoom charges: *Rs.${Math.round(roomTotal).toLocaleString()}*\n`;
+    confirmMsg += `\nRoom charges: *Rs.${Math.round(roomTotal).toLocaleString()}*\n`;
     if (extraCharge > 0) {
       confirmMsg += `Extra bed charges: *Rs.${Math.round(extraCharge).toLocaleString()}*\n`;
     }
-    confirmMsg +=
-      `*Total: Rs.${Math.round(grandTotal).toLocaleString()}*\n\n` +
-      `Guest mobile: *${session.guestMobile}*\n\n` +
-      `Thank you! `;
+    confirmMsg += `*Total: Rs.${Math.round(grandTotal).toLocaleString()}*\n\n`;
+    confirmMsg += `Hotel: Hotel Sukhsagar Regency, Shimla\n`;
+    confirmMsg += `Thank you for booking with us! `;
 
     await sendMessage(from, confirmMsg);
+
+    // Send WhatsApp notification to admin
+    const adminMsg =
+      `NEW BOOKING CONFIRMED!\n\n` +
+      `Confirmation No: ${confirmNo}\n` +
+      `Agent: ${agent.name} (${from})\n` +
+      `Guest: ${session.guestName} (${session.guestMobile})\n` +
+      `Check-in: ${fmtDate(session.ciDate)}\n` +
+      `Check-out: ${fmtDate(session.coDate)}\n` +
+      `Nights: ${nights}\n` +
+      `Rooms: ${rooms} x ${typeName}\n` +
+      `Plan: ${session.plan}\n` +
+      `Total: Rs.${Math.round(grandTotal).toLocaleString()}`;
+
+    await sendReminder(ADMIN_PHONE, adminMsg);
+
+    // Send email to hotel
+    try {
+      const axios = require("axios");
+      const PMS_URL = process.env.PMS_URL || "https://hotelease-pms.onrender.com";
+      await axios.post(PMS_URL + "/api/reservations/send-booking-email", {
+        to: "info@sukhsagarregency.com",
+        confirmNo,
+        agentName: agent.name,
+        agentPhone: from,
+        guestName: session.guestName,
+        guestMobile: session.guestMobile,
+        ciDate: fmtDate(session.ciDate),
+        coDate: fmtDate(session.coDate),
+        nights,
+        rooms,
+        roomType: typeName,
+        plan: session.plan,
+        rate: Math.round(rate),
+        total: Math.round(grandTotal),
+      });
+      console.log("Booking email sent to hotel");
+    } catch(emailErr) {
+      console.error("Email error:", emailErr.message);
+    }
+
     sessions[from] = { step: "idle" };
   } catch (err) {
     console.error("confirmAndSave error:", err.message);
-    await sendMessage(from, "Booking confirmed! (Could not save to PMS - please add manually)");
+    await sendMessage(from, "Booking confirmed! (Note: Please verify with hotel directly)");
     sessions[from] = { step: "idle" };
   }
 }
@@ -521,14 +586,21 @@ async function confirmAndSave(from, agent, session) {
 // -- AGENT MENU HELPER --------------------------------------------------
 async function sendAgentMenu(from, agentName) {
   await sendMessage(from,
-    `Dear *${agentName}*,\n\nWelcome! How can I help you?\n\n` +
-    `*1* - Check availability & rates\n` +
+    `Dear *${agentName}*,\n\nWelcome to Hotel Sukhsagar Regency! 🏨\n\n` +
+    `*To check availability & rates, send:*\n` +
+    `*[rooms] [type] [plan] [dates]*\n\n` +
+    `Examples:\n` +
+    `• 2 deluxe CP 10 july 12 july\n` +
+    `• 2 dlx 1 honey MAP c/in 10july c/out 12july\n` +
+    `• 3 sdlx MAPAI 10aug 2nights\n\n` +
+    `Room types: *deluxe/dlx, super deluxe/sdlx, honeymoon/honey*\n` +
+    `Plans: *CP, MAP, MAPAI, EP*\n\n` +
+    `*Other options:*\n` +
     `*2* - Hotel photos\n` +
-    `*3* - Restaurant menu & meal plans\n` +
-    `*4* - Location & directions\n` +
+    `*3* - Breakfast menu\n` +
+    `*4* - Location\n` +
     `*5* - Contact us\n\n` +
-    `Or just send your enquiry directly:\n` +
-    `Example: *2 deluxe CP 10 july 12 july*`
+    `Reply *HELP* anytime to see this message.`
   );
 }
 
