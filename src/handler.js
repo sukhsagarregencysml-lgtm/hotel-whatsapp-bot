@@ -483,9 +483,9 @@ async function confirmAndSave(from, agent, session) {
       guestMobile: session.guestMobile || from,
       male: 1, female: 0, kids: 0,
       plan: session.plan || "CP",
-      tariff: Math.round((session.rate || 0)),
+      tariff: 1, // Rate hidden from Stayezee - real rate sent to admin
       extra_bed: session.extraBed || 0,
-      extra_bed_charge: session.extraBedCharge || 0,
+      extra_bed_charge: 0, // Hidden from Stayezee
       rooms: session.rooms || 1,
       checkinDate: ciFormatted,
       checkoutDate: coFormatted,
