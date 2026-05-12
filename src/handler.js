@@ -141,6 +141,22 @@ async function handleIncoming({ from, text, msgId }) {
     return;
   }
 
+  // Step: awaiting upgrade to super deluxe
+  if (session.step === "awaiting_upgrade") {
+    if (t === "UPGRADE" || t === "YES" || t === "Y") {
+      session.roomType = "superdeluxe";
+      session.roomTypes = [{ type: "superdeluxe", count: session.rooms || 1 }];
+      session.step = "idle";
+      await sendMessage(from, `Dear *${agent.name}*,\n\nChecking Super Deluxe availability...`);
+      await checkAndRespond(from, agent, session);
+      return;
+    } else {
+      session.step = "idle";
+      await sendMessage(from, `Dear *${agent.name}*,\n\nNo problem! Feel free to send a new enquiry with different dates. 🙏`);
+      return;
+    }
+  }
+
   // Step: awaiting checkout date
   if (session.step === "awaiting_checkout") {
     const parsed = parseEnquiry("dlx " + text);
@@ -383,11 +399,17 @@ async function checkAndRespond(from, agent, session) {
       session.step = "idle";
       await sendMessage(from,
         `Dear *${agent.name}*,\n\n` +
-        `Online bookings are available for *up to 3 nights* only.\n\n` +
-        `For longer stays (${nights} nights), please contact our admin directly:\n\n` +
+        `Online bookings via WhatsApp are available for *up to 3 nights* only.\n\n` +
+        `Your request is for *${nights} nights* (${fmtDate(session.ciDate)} - ${fmtDate(session.coDate)}).\n\n` +
+        `For stays longer than 3 nights, please contact our admin:\n\n` +
         `📞 *+91 98160 03322*\n` +
         `📧 info@sukhsagarregency.com\n\n` +
-        `Our team will assist you with special rates for extended stays. 🙏`
+        `Our team will provide special rates for extended stays. 🙏`
+      );
+      await sendReminder(ADMIN_PHONE,
+        `LONG STAY ENQUIRY\nAgent: ${agent.name} (${from})\n` +
+        `Dates: ${fmtDate(session.ciDate)} - ${fmtDate(session.coDate)}\n` +
+        `Nights: ${nights}\nRooms: ${session.rooms}\nType: ${session.roomType}\nPlan: ${session.plan}`
       );
       return;
     }
