@@ -529,33 +529,217 @@ async function confirmAndSave(from, agent, session) {
     const typeName = session.roomType === "honeymoon" ? "Honeymoon" :
                      session.roomType === "superdeluxe" ? "Super Deluxe" : "Deluxe";
 
-    // WhatsApp confirmation to agent
-    let confirmMsg =
-      `Dear *${agent.name}*,\n\n` +
-      `Booking *CONFIRMED!* \n\n` +
-      `Confirmation No: *${confirmNo}*\n\n` +
+    // Generate voucher number
+    const now = new Date();
+    const voucherNo = "SR-" + String(now.getDate()).padStart(2,"0") +
+                      String(now.getMonth()+1).padStart(2,"0") +
+                      now.getFullYear() + "-" +
+                      String(Math.floor(Math.random()*9000)+1000);
+
+    // WhatsApp VOUCHER to agent
+    let voucherMsg =
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `🏨 HOTEL SUKHSAGAR REGENCY\n` +
+      `      BOOKING VOUCHER\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `Voucher No: *${voucherNo}*\n` +
+      `Date: *${fmtDate(now.toISOString().split("T")[0])}*\n\n` +
+      `*AGENT DETAILS*\n` +
+      `Agent: ${agent.name}\n` +
+      `Phone: ${from}\n\n` +
+      `*GUEST DETAILS*\n` +
       `Guest: *${session.guestName}*\n` +
-      `Mobile: *${session.guestMobile}*\n\n` +
-      `Check-in: *${fmtDate(session.ciDate)}*\n` +
+      `Mobile: ${session.guestMobile}\n\n` +
+      `*BOOKING DETAILS*\n` +
+      `Check-in:  *${fmtDate(session.ciDate)}*\n` +
       `Check-out: *${fmtDate(session.coDate)}*\n` +
-      `Nights: *${nights}*\n` +
-      `Rooms: *${rooms} x ${typeName}*\n` +
-      `Plan: *${session.plan}*\n` +
-      `Rate: *Rs.${Math.round(rate).toLocaleString()}/night*\n`;
+      `Nights:    *${nights}*\n` +
+      `Rooms:     *${rooms} x ${typeName}*\n` +
+      `Plan:      *${session.plan}*\n`;
 
     if (session.extraBed) {
-      confirmMsg += `Extra bed: *${session.extraBedType}* - Rs.${session.extraBedCharge}/night\n`;
+      voucherMsg += `Extra bed: *${session.extraBedType}*\n`;
+    } else {
+      voucherMsg += `Extra bed: None\n`;
     }
 
-    confirmMsg += `\nRoom charges: *Rs.${Math.round(roomTotal).toLocaleString()}*\n`;
+    voucherMsg +=
+      `\n*AMOUNT*\n` +
+      `Rate:  Rs.${Math.round(rate).toLocaleString()}/night\n`;
+
     if (extraCharge > 0) {
-      confirmMsg += `Extra bed charges: *Rs.${Math.round(extraCharge).toLocaleString()}*\n`;
+      voucherMsg += `Extra: Rs.${Math.round(extraCharge).toLocaleString()}\n`;
     }
-    confirmMsg += `*Total: Rs.${Math.round(grandTotal).toLocaleString()}*\n\n`;
-    confirmMsg += `Hotel: Hotel Sukhsagar Regency, Shimla\n`;
-    confirmMsg += `Thank you for booking with us! `;
 
-    await sendMessage(from, confirmMsg);
+    voucherMsg +=
+      `*Total: Rs.${Math.round(grandTotal).toLocaleString()}*\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `Hotel Sukhsagar Regency\n` +
+      `Shimla, Himachal Pradesh\n` +
+      `📞 +91 98160 03322\n` +
+      `━━━━━━━━━━━━━━━━━━━━━`;
+
+    await sendMessage(from, voucherMsg);
+
+    // Generate and send PDF voucher
+    try {
+      const { generateVoucher } = require("./generate-voucher");
+      const axios = require("axios");
+      const fs = require("fs");
+      const FormData = require("form-data");
+
+      const pdfPath = await generateVoucher({
+        voucherNo, date: fmtDate(now.toISOString().split("T")[0]),
+        agentName: agent.name, agentPhone: from,
+        guestName: session.guestName, guestMobile: session.guestMobile,
+        ciDate: fmtDate(session.ciDate), coDate: fmtDate(session.coDate),
+        nights, rooms, roomType: typeName, plan: session.plan,
+        extraBed: session.extraBed, extraBedType: session.extraBedType,
+        rate, roomTotal, extraCharge, grandTotal
+      });
+
+      // Send PDF via WhatsApp
+      const form = new FormData();
+      form.append("messaging_product", "whatsapp");
+      form.append("recipient_type", "individual");
+      form.append("to", from);
+      form.append("type", "document");
+      form.append("document[caption]", `Booking Voucher - ${voucherNo}`);
+      form.append("document[filename]", `Voucher-${voucherNo}.pdf`);
+      form.append("document[document]", fs.createReadStream(pdfPath), {
+        contentType: "application/pdf",
+        filename: `Voucher-${voucherNo}.pdf`
+      });
+
+      // First upload media
+      const uploadForm = new FormData();
+      uploadForm.append("messaging_product", "whatsapp");
+      uploadForm.append("file", fs.createReadStream(pdfPath), {
+        contentType: "application/pdf",
+        filename: `Voucher-${voucherNo}.pdf`
+      });
+      uploadForm.append("type", "application/pdf");
+
+      const uploadRes = await axios.post(
+        `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/media`,
+        uploadForm,
+        { headers: { 
+          Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`,
+          ...uploadForm.getHeaders()
+        }}
+      );
+
+      const mediaId = uploadRes.data?.id;
+      if (mediaId) {
+        await axios.post(
+          `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
+          {
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: from,
+            type: "document",
+            document: {
+              id: mediaId,
+              caption: `Booking Voucher - ${voucherNo}`,
+              filename: `Voucher-${voucherNo}.pdf`
+            }
+          },
+          { headers: { 
+            Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`,
+            "Content-Type": "application/json"
+          }}
+        );
+        console.log("PDF voucher sent via WhatsApp");
+      }
+
+      // Attach PDF to email too
+      session._pdfPath = pdfPath;
+    } catch(pdfErr) {
+      console.error("PDF error:", pdfErr.message);
+    }
+
+    // Send email to hotel
+    try {
+      const nodemailer = require("nodemailer");
+      const transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: {
+          user: process.env.EMAIL_USER || "info@sukhsagarregency.com",
+          pass: process.env.EMAIL_PASS
+        }
+      });
+
+      const emailHtml = `
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+          <div style="background:#1a1a2e;padding:20px;text-align:center">
+            <h2 style="color:#C9A84C;margin:0">Hotel Sukhsagar Regency</h2>
+            <p style="color:#fff;margin:5px 0;font-size:14px">Booking Voucher</p>
+          </div>
+          
+          <div style="padding:20px;border:1px solid #eee">
+            <table style="width:100%;margin-bottom:20px">
+              <tr><td style="color:#666;padding:5px">Voucher No</td><td style="font-weight:bold;padding:5px">${voucherNo}</td></tr>
+              <tr><td style="color:#666;padding:5px">Date</td><td style="padding:5px">${fmtDate(now.toISOString().split("T")[0])}</td></tr>
+            </table>
+
+            <h3 style="color:#C9A84C;border-bottom:1px solid #eee;padding-bottom:8px">Agent Details</h3>
+            <table style="width:100%;margin-bottom:20px">
+              <tr><td style="color:#666;padding:5px">Agent Name</td><td style="padding:5px">${agent.name}</td></tr>
+              <tr><td style="color:#666;padding:5px">Agent Phone</td><td style="padding:5px">${from}</td></tr>
+            </table>
+
+            <h3 style="color:#C9A84C;border-bottom:1px solid #eee;padding-bottom:8px">Guest Details</h3>
+            <table style="width:100%;margin-bottom:20px">
+              <tr><td style="color:#666;padding:5px">Guest Name</td><td style="font-weight:bold;padding:5px">${session.guestName}</td></tr>
+              <tr><td style="color:#666;padding:5px">Guest Mobile</td><td style="padding:5px">${session.guestMobile}</td></tr>
+            </table>
+
+            <h3 style="color:#C9A84C;border-bottom:1px solid #eee;padding-bottom:8px">Booking Details</h3>
+            <table style="width:100%;margin-bottom:20px">
+              <tr><td style="color:#666;padding:5px">Check-in</td><td style="font-weight:bold;padding:5px">${fmtDate(session.ciDate)}</td></tr>
+              <tr><td style="color:#666;padding:5px">Check-out</td><td style="font-weight:bold;padding:5px">${fmtDate(session.coDate)}</td></tr>
+              <tr><td style="color:#666;padding:5px">Nights</td><td style="padding:5px">${nights}</td></tr>
+              <tr><td style="color:#666;padding:5px">Rooms</td><td style="padding:5px">${rooms} x ${typeName}</td></tr>
+              <tr><td style="color:#666;padding:5px">Plan</td><td style="padding:5px">${session.plan}</td></tr>
+              <tr><td style="color:#666;padding:5px">Extra Bed</td><td style="padding:5px">${session.extraBed ? session.extraBedType : "None"}</td></tr>
+            </table>
+
+            <h3 style="color:#C9A84C;border-bottom:1px solid #eee;padding-bottom:8px">Amount</h3>
+            <table style="width:100%;margin-bottom:20px">
+              <tr><td style="color:#666;padding:5px">Rate per night</td><td style="padding:5px">Rs.${Math.round(rate).toLocaleString()}</td></tr>
+              <tr><td style="color:#666;padding:5px">Room charges</td><td style="padding:5px">Rs.${Math.round(roomTotal).toLocaleString()}</td></tr>
+              ${extraCharge > 0 ? `<tr><td style="color:#666;padding:5px">Extra bed charges</td><td style="padding:5px">Rs.${Math.round(extraCharge).toLocaleString()}</td></tr>` : ""}
+              <tr style="background:#C9A84C"><td style="padding:8px;font-weight:bold;color:#fff">Total Amount</td><td style="padding:8px;font-weight:bold;color:#fff">Rs.${Math.round(grandTotal).toLocaleString()}</td></tr>
+            </table>
+          </div>
+
+          <div style="background:#f5f5f5;padding:15px;text-align:center;font-size:12px;color:#666">
+            Hotel Sukhsagar Regency, Shimla, Himachal Pradesh<br>
+            📞 +91 98160 03322 | info@sukhsagarregency.com
+          </div>
+        </div>
+      `;
+
+      const mailOptions = {
+        from: `"HotelEase Bot" <${process.env.EMAIL_USER}>`,
+        to: "info@sukhsagarregency.com",
+        subject: `New Booking - ${session.guestName} - ${fmtDate(session.ciDate)} - ${voucherNo}`,
+        html: emailHtml
+      };
+
+      if (session._pdfPath) {
+        mailOptions.attachments = [{
+          filename: `Voucher-${voucherNo}.pdf`,
+          path: session._pdfPath
+        }];
+      }
+
+      await transporter.sendMail(mailOptions);
+
+      console.log("Voucher email sent to hotel");
+    } catch(emailErr) {
+      console.error("Email error:", emailErr.message);
+    }
 
     // Send WhatsApp notification to admin
     const adminMsg =
