@@ -33,6 +33,14 @@ function fmtDate(dateStr) {
   return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
 }
 
+function getExtraPersonCharge(plan) {
+  return plan === "MAP" || plan === "MAPAI" ? 1300 : 800;
+}
+
+function getChildNoBedCharge(plan) {
+  return plan === "MAP" || plan === "MAPAI" ? 800 : 400;
+}
+
 async function getAgent(phone) {
   const db = require("./agents");
   return db.getAgent(phone);
@@ -103,10 +111,13 @@ async function handleIncoming({ from, text, msgId }) {
     const mobile = text.replace(/\D/g, "");
     session.guestMobile = mobile.startsWith("91") ? mobile : "91" + mobile;
     session.step = "awaiting_extra_bed";
+    const extraPersonCharge = getExtraPersonCharge(session.plan);
+    const childNoBedCharge = getChildNoBedCharge(session.plan);
     await sendMessage(from,
       `Dear *${agent.name}*,\n\nDo you need an *extra bed*?\n\n` +
-      `*1* - Yes, extra bed (above 5 yrs) - Rs.800/night\n` +
-      `*2* - Yes, extra bed (under 5 yrs) - FREE\n` +
+      `*1* - Extra person (above 10 yrs) with mattress - Rs.${extraPersonCharge}/night\n` +
+      `*2* - Child no bed (6 to 10 yrs) - Rs.${childNoBedCharge}/night\n` +
+      `*3* - Child (under 5 yrs) - FREE\n` +
       `*NO* - No extra bed needed`
     );
     return;
@@ -115,8 +126,10 @@ async function handleIncoming({ from, text, msgId }) {
   // Step: awaiting extra bed
   if (session.step === "awaiting_extra_bed") {
     if (t === "1") {
-      session.extraBed = 1; session.extraBedCharge = 800; session.extraBedType = "Adult (above 5 yrs)";
+      session.extraBed = 1; session.extraBedCharge = getExtraPersonCharge(session.plan); session.extraBedType = "Extra person (above 10 yrs) with mattress";
     } else if (t === "2") {
+      session.extraBed = 1; session.extraBedCharge = getChildNoBedCharge(session.plan); session.extraBedType = "Child no bed (6 to 10 yrs)";
+    } else if (t === "3") {
       session.extraBed = 1; session.extraBedCharge = 0; session.extraBedType = "Child (under 5 yrs)";
     } else {
       session.extraBed = 0; session.extraBedCharge = 0; session.extraBedType = null;
@@ -424,6 +437,8 @@ async function checkAndRespond(from, agent, session) {
       session.step = "awaiting_confirm";
 
       const plan = session.plan;
+      const extraPersonCharge = getExtraPersonCharge(plan);
+      const childNoBedCharge = getChildNoBedCharge(plan);
       let rateMsg = `Dear *${agent.name}*,\n\nRooms available! Here are the rates:\n\n`;
       let grandTotal = 0;
 
@@ -442,7 +457,8 @@ async function checkAndRespond(from, agent, session) {
 
         rateMsg += `*${rt.count} x ${typeName}*\n`;
         rateMsg += `  Without extra bed: *Rs.${rate.toLocaleString()}/night*${gstNote}\n`;
-        rateMsg += `  With extra bed (above 5 yrs): *Rs.${(rate+800).toLocaleString()}/night*${gstNote}\n`;
+        rateMsg += `  Extra person (above 10 yrs) with mattress: *Rs.${(rate+extraPersonCharge).toLocaleString()}/night*${gstNote}\n`;
+        rateMsg += `  Child no bed (6 to 10 yrs): *Rs.${(rate+childNoBedCharge).toLocaleString()}/night*${gstNote}\n`;
         rateMsg += `  With extra bed (under 5 yrs): *Rs.${rate.toLocaleString()}/night* (FREE)\n\n`;
       }
 
