@@ -36,9 +36,9 @@ function extractDates(text) {
     }
   }
 
-  // Numeric: "22/7", "22-07-2026"
+  // Numeric: "22/7", "22-07-2026", "22.07.2026"
   if (dates.length < 2) {
-    const numRe = /(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/g;
+    const numRe = /(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?/g;
     while ((m = numRe.exec(text)) !== null) {
       const day = parseInt(m[1]), mon = parseInt(m[2]) - 1;
       const year = m[3] ? (m[3].length===2?2000+parseInt(m[3]):parseInt(m[3])) : yr;
