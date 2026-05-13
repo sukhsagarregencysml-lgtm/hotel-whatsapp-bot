@@ -56,10 +56,10 @@ function toISO({ day, month, year }) {
 
 function extractGuestCounts(text) {
   const guests = {};
-  const adultsM = text.match(/(?:number\s+of\s+)?adults?\D*(\d+)/i) || text.match(/(\d+)\s*adults?\b/i);
+  const adultsM = text.match(/(?:number\s+of\s+)?adults?\s*[:=-]?\s*(\d+)/i) || text.match(/(\d+)\s*adults?\b/i);
   if (adultsM) guests.adults = parseInt(adultsM[1]);
 
-  const kidsCountM = text.match(/(\d+)[^\S\r\n]*(?:kids?|children|child)\b/i);
+  const kidsCountM = text.match(/(?:kids?|children|child)\s*[:=-]?\s*(\d+)/i) || text.match(/(\d+)[^\S\r\n]*(?:kids?|children|child)\b/i);
   if (kidsCountM) guests.kids = parseInt(kidsCountM[1]);
 
   const kidsLineM = text.match(/(?:kids?|children|child)[^\n]*(?:ages?|yrs?|years?)[^\n]*/i);
@@ -85,7 +85,7 @@ function parseEnquiry(text) {
   const lower = text.toLowerCase();
 
   // Must have at least a date to be an enquiry
-  const hasDate = /\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d[\/\-]\d)/i.test(text);
+  const hasDate = /\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d[\/\-.]\d)/i.test(text);
   const hasBookingWord = /book|room|availab|enquir|need|check|night|\d+n\b|price|rate|del|dlx|honey|super|sd\b|cp\b|map\b|ep\b/i.test(text);
   if (!hasDate && !hasBookingWord) return null;
 

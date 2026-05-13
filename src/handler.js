@@ -1003,4 +1003,25 @@ async function handleAdminReply(from, text, t) {
   await sendMessage(from, `Admin message received: ${text}`);
 }
 
-module.exports = { handleIncoming, pendingOptIns, optedInGuests };
+async function safeHandleIncoming(args) {
+  try {
+    return await handleIncoming(args);
+  } catch (err) {
+    console.error("Unhandled bot error:", err);
+    try {
+      await sendMessage(args.from,
+        `Sorry, I could not read this booking format properly.\n\n` +
+        `Please send it like:\n` +
+        `*31 May to 2 June, 4 adults, 2 kids age 1.5 and 4, CP*\n\n` +
+        `Or share check-in, check-out, adults, kids and plan in separate lines.`
+      );
+      await sendReminder(ADMIN_PHONE,
+        `BOT ERROR\nFrom: ${args.from}\nMessage: ${args.text || ""}\nError: ${err.message}`
+      );
+    } catch (notifyErr) {
+      console.error("Error notification failed:", notifyErr);
+    }
+  }
+}
+
+module.exports = { handleIncoming: safeHandleIncoming, pendingOptIns, optedInGuests };
