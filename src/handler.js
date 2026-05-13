@@ -250,6 +250,9 @@ async function handleIncoming({ from, text, msgId }) {
     session.rooms = enquiry.rooms || 1;
     session.roomType = enquiry.roomType;
     session.roomTypes = enquiry.roomTypes || null;
+    if (enquiry.adults) session.adults = enquiry.adults;
+    if (enquiry.kids !== undefined) session.kids = enquiry.kids;
+    if (enquiry.kidAges) session.kidAges = enquiry.kidAges;
     if (enquiry.plan) session.plan = enquiry.plan;
 
     // Validate date
@@ -265,6 +268,8 @@ async function handleIncoming({ from, text, msgId }) {
       `Check-in: ${fmtDate(session.ciDate)}\n` +
       `Check-out: ${session.coDate ? fmtDate(session.coDate) : "—"}\n` +
       `Rooms: ${session.rooms}\n` +
+      `Adults: ${session.adults || "—"}\n` +
+      `Kids: ${session.kids !== undefined ? session.kids : "—"}${session.kidAges ? ` (${session.kidAges.join(", ")} yrs)` : ""}\n` +
       `Plan: ${session.plan || "—"}\n\n` +
       `We are checking availability...`;
     await sendMessage(from, ackMsg);
@@ -519,7 +524,7 @@ async function confirmAndSave(from, agent, session) {
     const stayezeeRes = await saveReservation({
       guestName: session.guestName || "Guest",
       guestMobile: session.guestMobile || from,
-      male: 1, female: 0, kids: 0,
+      male: session.adults || 1, female: 0, kids: session.kids || 0,
       plan: session.plan || "CP",
       tariff: 1, // Rate hidden from Stayezee - real rate sent to admin
       extra_bed: session.extraBed || 0,
@@ -571,6 +576,8 @@ async function confirmAndSave(from, agent, session) {
       `Check-out: *${fmtDate(session.coDate)}*\n` +
       `Nights:    *${nights}*\n` +
       `Rooms:     *${rooms} x ${typeName}*\n` +
+      `Adults:    *${session.adults || 1}*\n` +
+      `Kids:      *${session.kids || 0}${session.kidAges ? ` (${session.kidAges.join(", ")} yrs)` : ""}*\n` +
       `Plan:      *${session.plan}*\n`;
 
     if (session.extraBed) {
@@ -716,6 +723,8 @@ async function confirmAndSave(from, agent, session) {
               <tr><td style="color:#666;padding:5px">Check-out</td><td style="font-weight:bold;padding:5px">${fmtDate(session.coDate)}</td></tr>
               <tr><td style="color:#666;padding:5px">Nights</td><td style="padding:5px">${nights}</td></tr>
               <tr><td style="color:#666;padding:5px">Rooms</td><td style="padding:5px">${rooms} x ${typeName}</td></tr>
+              <tr><td style="color:#666;padding:5px">Adults</td><td style="padding:5px">${session.adults || 1}</td></tr>
+              <tr><td style="color:#666;padding:5px">Kids</td><td style="padding:5px">${session.kids || 0}${session.kidAges ? ` (${session.kidAges.join(", ")} yrs)` : ""}</td></tr>
               <tr><td style="color:#666;padding:5px">Plan</td><td style="padding:5px">${session.plan}</td></tr>
               <tr><td style="color:#666;padding:5px">Extra Bed</td><td style="padding:5px">${session.extraBed ? session.extraBedType : "None"}</td></tr>
             </table>
@@ -788,6 +797,9 @@ async function confirmAndSave(from, agent, session) {
         nights,
         rooms,
         roomType: typeName,
+        adults: session.adults || 1,
+        kids: session.kids || 0,
+        kidAges: session.kidAges || [],
         plan: session.plan,
         rate: Math.round(rate),
         total: Math.round(grandTotal),
