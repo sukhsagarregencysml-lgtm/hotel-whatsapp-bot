@@ -9,6 +9,20 @@ function extractDates(text) {
   const dates = [];
   const yr = new Date().getFullYear();
 
+  // "22 24 july", "22 to 24 july", "22-24 july"
+  const sharedMonthRe = /(\d{1,2})(?:st|nd|rd|th)?\s*(?:(?:to|till|until|upto|[-–])\s*|\s+)(\d{1,2})(?:st|nd|rd|th)?\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s*(\d{4}))?/gi;
+  let sharedM;
+  while ((sharedM = sharedMonthRe.exec(text)) !== null) {
+    const day1 = parseInt(sharedM[1]);
+    const day2 = parseInt(sharedM[2]);
+    const mon = MONTHS[sharedM[3].toLowerCase().slice(0,3)];
+    const year = sharedM[4] ? parseInt(sharedM[4]) : yr;
+    if (mon !== undefined && day1 >= 1 && day1 <= 31 && day2 >= 1 && day2 <= 31) {
+      dates.push({ day: day1, month: mon, year });
+      dates.push({ day: day2, month: mon, year });
+    }
+  }
+
   // "22july", "22nd july", "22 july 2026", "22july2026"
   const wordRe = /(\d{1,2})(?:st|nd|rd|th)?\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s*(\d{4}))?/gi;
   let m;
