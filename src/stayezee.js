@@ -65,10 +65,13 @@ async function saveReservation({ guestName, guestMobile, male, female, kids, pla
     );
 
     console.log('Stayezee saveReservation response:', JSON.stringify(res.data));
+    if (res.data?.status === false || res.data?.success === false) {
+      return { success: false, data: res.data, error: res.data?.message || 'Stayezee rejected reservation' };
+    }
     return { success: true, data: res.data };
   } catch (err) {
     console.error('Stayezee saveReservation error:', err.response?.data || err.message);
-    return { success: false, error: err.message };
+    return { success: false, data: err.response?.data, error: err.response?.data?.message || err.message };
   }
 }
 

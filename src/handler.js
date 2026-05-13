@@ -248,7 +248,7 @@ async function handleIncoming({ from, text, msgId }) {
     session.ciDate = enquiry.ciDate;
     session.coDate = enquiry.coDate;
     session.rooms = enquiry.rooms || 1;
-    session.roomType = enquiry.roomType;
+    session.roomType = enquiry.roomType || "deluxe";
     session.roomTypes = enquiry.roomTypes || null;
     if (enquiry.adults) session.adults = enquiry.adults;
     if (enquiry.kids !== undefined) session.kids = enquiry.kids;
@@ -449,7 +449,7 @@ async function checkAndRespond(from, agent, session) {
 
       const roomTypesList = session.roomTypes && session.roomTypes.length > 1
         ? session.roomTypes
-        : [{ type: session.roomType, count: session.rooms }];
+        : [{ type: session.roomType || "deluxe", count: session.rooms }];
 
       for (const rt of roomTypesList) {
         const rateInfo = getRate(rt.type, plan, session.ciDate, agent.category);
@@ -520,11 +520,13 @@ async function confirmAndSave(from, agent, session) {
   try {
     const ciFormatted = session.ciDate ? session.ciDate.split("-").reverse().join("-") : "";
     const coFormatted = session.coDate ? session.coDate.split("-").reverse().join("-") : "";
+    const pmsRoomType = session.roomType === "honeymoon" ? "Honeymoon" :
+                        session.roomType === "superdeluxe" ? "Super Deluxe" : "Deluxe";
 
     const stayezeeRes = await saveReservation({
       guestName: session.guestName || "Guest",
       guestMobile: session.guestMobile || from,
-      male: session.adults || 1, female: 0, kids: session.kids || 0,
+      male: 1, female: 0, kids: 0,
       plan: session.plan || "CP",
       tariff: 1, // Rate hidden from Stayezee - real rate sent to admin
       extra_bed: session.extraBed || 0,
@@ -532,8 +534,22 @@ async function confirmAndSave(from, agent, session) {
       rooms: session.rooms || 1,
       checkinDate: ciFormatted,
       checkoutDate: coFormatted,
-      roomType: session.roomType || "Deluxe",
+      roomType: pmsRoomType,
     });
+
+    if (!stayezeeRes?.success) {
+      console.error("Stayezee reservation was not saved:", stayezeeRes);
+      await sendMessage(from,
+        `Booking could not be saved in PMS right now. Please contact hotel admin before confirming this booking.`
+      );
+      await sendReminder(ADMIN_PHONE,
+        `PMS SAVE FAILED\nAgent: ${agent.name} (${from})\nGuest: ${session.guestName || "Guest"} (${session.guestMobile || from})\n` +
+        `Dates: ${fmtDate(session.ciDate)} - ${fmtDate(session.coDate)}\nRooms: ${session.rooms || 1}\nPlan: ${session.plan || "CP"}\n` +
+        `Error: ${stayezeeRes?.error || JSON.stringify(stayezeeRes)}`
+      );
+      session.step = "idle";
+      return;
+    }
 
     // Get Stayezee confirmation number
     const stayezeeData = stayezeeRes?.data;
@@ -547,8 +563,7 @@ async function confirmAndSave(from, agent, session) {
     const extraCharge = (session.extraBedCharge || 0) * nights;
     const roomTotal = rate * rooms * nights;
     const grandTotal = roomTotal + extraCharge;
-    const typeName = session.roomType === "honeymoon" ? "Honeymoon" :
-                     session.roomType === "superdeluxe" ? "Super Deluxe" : "Deluxe";
+    const typeName = pmsRoomType;
 
     // Generate voucher number
     const now = new Date();
