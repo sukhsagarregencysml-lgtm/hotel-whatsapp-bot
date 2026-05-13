@@ -518,8 +518,8 @@ async function checkAndRespond(from, agent, session) {
 
 async function confirmAndSave(from, agent, session) {
   try {
-    const ciFormatted = session.ciDate ? session.ciDate.split("-").reverse().join("-") : "";
-    const coFormatted = session.coDate ? session.coDate.split("-").reverse().join("-") : "";
+    const ciFormatted = session.ciDate || "";
+    const coFormatted = session.coDate || "";
     const pmsRoomType = session.roomType === "honeymoon" ? "Honeymoon" :
                         session.roomType === "superdeluxe" ? "Super Deluxe" : "Deluxe";
 
