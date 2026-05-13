@@ -54,6 +54,32 @@ function toISO({ day, month, year }) {
   return `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
 }
 
+function extractGuestCounts(text) {
+  const guests = {};
+  const adultsM = text.match(/(?:number\s+of\s+)?adults?\D*(\d+)/i) || text.match(/(\d+)\s*adults?\b/i);
+  if (adultsM) guests.adults = parseInt(adultsM[1]);
+
+  const kidsCountM = text.match(/(\d+)[^\S\r\n]*(?:kids?|children|child)\b/i);
+  if (kidsCountM) guests.kids = parseInt(kidsCountM[1]);
+
+  const kidsLineM = text.match(/(?:kids?|children|child)[^\n]*(?:ages?|yrs?|years?)[^\n]*/i);
+  if (kidsLineM) {
+    let agesText = kidsLineM[0].replace(/\b\d+[^\S\r\n]*(?:kids?|children|child)\b/gi, '');
+    const ages = [];
+    let ageM;
+    const ageRe = /\d+(?:\.\d+)?/g;
+    while ((ageM = ageRe.exec(agesText)) !== null) {
+      ages.push(parseFloat(ageM[0]));
+    }
+    if (ages.length > 0) {
+      guests.kidAges = ages;
+      if (!guests.kids) guests.kids = ages.length;
+    }
+  }
+
+  return guests;
+}
+
 function parseEnquiry(text) {
   if (!text || text.trim().length < 4) return null;
   const lower = text.toLowerCase();
@@ -64,6 +90,7 @@ function parseEnquiry(text) {
   if (!hasDate && !hasBookingWord) return null;
 
   const result = {};
+  Object.assign(result, extractGuestCounts(text));
 
   // -- Plan ---------------------------------------------------------------
   if (/\bMAPAI\b/i.test(text)) result.plan = "MAPAI";
@@ -116,7 +143,7 @@ function parseEnquiry(text) {
     else if (/del|dlx|delx/i.test(text)) result.roomType = "deluxe";
     else result.roomType = null;
     const rm = text.match(/(\d+)\s*rooms?/i);
-    result.rooms = rm ? parseInt(rm[1]) : 1;
+    result.rooms = rm ? parseInt(rm[1]) : (result.adults ? Math.ceil(result.adults / 3) : 1);
   }
 
   // -- Dates --------------------------------------------------------------
