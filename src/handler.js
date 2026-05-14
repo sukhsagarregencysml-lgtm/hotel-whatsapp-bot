@@ -762,7 +762,7 @@ async function confirmAndSave(from, agent, session) {
 
       const mailOptions = {
         from: `"HotelEase Bot" <${process.env.EMAIL_USER}>`,
-        to: "info@sukhsagarregency.com",
+        to: "sukhsagarregencysml@gmail.com",
         subject: `New Booking - ${session.guestName} - ${fmtDate(session.ciDate)} - ${voucherNo}`,
         html: emailHtml
       };
@@ -801,7 +801,7 @@ async function confirmAndSave(from, agent, session) {
       const axios = require("axios");
       const PMS_URL = process.env.PMS_URL || "https://hotelease-pms.onrender.com";
       await axios.post(PMS_URL + "/api/reservations/send-booking-email", {
-        to: "info@sukhsagarregency.com",
+        to: "sukhsagarregencysml@gmail.com",
         confirmNo,
         agentName: agent.name,
         agentPhone: from,
