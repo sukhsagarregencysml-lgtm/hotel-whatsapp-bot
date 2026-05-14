@@ -41,6 +41,15 @@ function getChildNoBedCharge(plan) {
   return plan === "MAP" || plan === "MAPAI" ? 800 : 400;
 }
 
+function withTimeout(promise, ms, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(message)), ms);
+    })
+  ]);
+}
+
 async function getAgent(phone) {
   const db = require("./agents");
   return db.getAgent(phone);
@@ -791,7 +800,11 @@ async function confirmAndSave(from, agent, session) {
       }
 
       console.log("Booking email: sending direct Gmail message", { to: bookingEmailTo });
-      const info = await transporter.sendMail(mailOptions);
+      const info = await withTimeout(
+        transporter.sendMail(mailOptions),
+        20000,
+        "Gmail send timed out after 20 seconds"
+      );
 
       console.log("Voucher email sent to hotel", { messageId: info.messageId, to: bookingEmailTo });
       }
