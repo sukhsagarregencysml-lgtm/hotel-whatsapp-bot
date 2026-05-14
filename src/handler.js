@@ -714,6 +714,9 @@ async function confirmAndSave(from, agent, session) {
       } else {
       const transporter = nodemailer.createTransport({
         service: "gmail",
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000,
         auth: {
           user: emailUser,
           pass: emailPass
@@ -787,6 +790,7 @@ async function confirmAndSave(from, agent, session) {
         }];
       }
 
+      console.log("Booking email: sending direct Gmail message", { to: bookingEmailTo });
       const info = await transporter.sendMail(mailOptions);
 
       console.log("Voucher email sent to hotel", { messageId: info.messageId, to: bookingEmailTo });
