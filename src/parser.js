@@ -24,7 +24,7 @@ function extractDates(text) {
   }
 
   // "22july", "22nd july", "22 july 2026", "22july2026"
-  const wordRe = /(\d{1,2})(?:st|nd|rd|th)?\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s*(\d{4}))?/gi;
+  const wordRe = /(\d{1,2})(?:st|nd|rd|th)?\s*[-\/.]?\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s*[-\/.]?\s*(\d{4}))?/gi;
   let m;
   while ((m = wordRe.exec(text)) !== null) {
     const day = parseInt(m[1]);
@@ -56,7 +56,7 @@ function toISO({ day, month, year }) {
 
 function extractGuestCounts(text) {
   const guests = {};
-  const adultsM = text.match(/(?:number\s+of\s+)?adults?\s*[:=-]?\s*(\d+)/i) || text.match(/(\d+)\s*adults?\b/i);
+  const adultsM = text.match(/(?:number\s+of\s+)?adults?\s*[:=-]?\s*(\d+)/i) || text.match(/(?:no\.?\s*of\s*)?paxs?\s*[:=-]?\s*(\d+)\s*adults?\b/i) || text.match(/(\d+)\s*adults?\b/i);
   if (adultsM) guests.adults = parseInt(adultsM[1]);
 
   const kidsCountM = text.match(/(?:kids?|children|child)\s*[:=-]?\s*(\d+)/i) || text.match(/(\d+)[^\S\r\n]*(?:kids?|children|child)\b/i);
@@ -95,6 +95,7 @@ function parseEnquiry(text) {
   // -- Plan ---------------------------------------------------------------
   if (/\bMAPAI\b/i.test(text)) result.plan = "MAPAI";
   else if (/\bMAP\b/i.test(text)) result.plan = "MAP";
+  else if (/\bCPAI\b/i.test(text)) result.plan = "CP";
   else if (/\bCP\b/i.test(text)) result.plan = "CP";
   else if (/\bEP\b/i.test(text)) result.plan = "EP";
   else result.plan = null;
@@ -143,7 +144,8 @@ function parseEnquiry(text) {
     else if (/del|dlx|delx/i.test(text)) result.roomType = "deluxe";
     else result.roomType = null;
     const rm = text.match(/(\d+)\s*rooms?/i);
-    result.rooms = rm ? parseInt(rm[1]) : (result.adults ? Math.ceil(result.adults / 3) : 1);
+    const sharingRm = text.match(/room\s*sharing\s*[:=-]?\s*(\d+)/i);
+    result.rooms = rm ? parseInt(rm[1]) : (sharingRm ? parseInt(sharingRm[1]) : (result.adults ? Math.ceil(result.adults / 3) : 1));
   }
 
   // -- Dates --------------------------------------------------------------
