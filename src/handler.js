@@ -699,11 +699,24 @@ async function confirmAndSave(from, agent, session) {
     // Send email to hotel
     try {
       const nodemailer = require("nodemailer");
+      const emailUser = process.env.EMAIL_USER;
+      const emailPass = process.env.EMAIL_PASS;
+      const bookingEmailTo = "sukhsagarregencysml@gmail.com";
+
+      console.log("Booking email: preparing direct Gmail send", {
+        to: bookingEmailTo,
+        hasEmailUser: Boolean(emailUser),
+        hasEmailPass: Boolean(emailPass)
+      });
+
+      if (!emailUser || !emailPass) {
+        console.error("Booking email skipped: EMAIL_USER or EMAIL_PASS is missing");
+      } else {
       const transporter = nodemailer.createTransport({
         service: "gmail",
         auth: {
-          user: process.env.EMAIL_USER || "info@sukhsagarregency.com",
-          pass: process.env.EMAIL_PASS
+          user: emailUser,
+          pass: emailPass
         }
       });
 
@@ -761,8 +774,8 @@ async function confirmAndSave(from, agent, session) {
       `;
 
       const mailOptions = {
-        from: `"HotelEase Bot" <${process.env.EMAIL_USER}>`,
-        to: "sukhsagarregencysml@gmail.com",
+        from: `"HotelEase Bot" <${emailUser}>`,
+        to: bookingEmailTo,
         subject: `New Booking - ${session.guestName} - ${fmtDate(session.ciDate)} - ${voucherNo}`,
         html: emailHtml
       };
@@ -774,11 +787,12 @@ async function confirmAndSave(from, agent, session) {
         }];
       }
 
-      await transporter.sendMail(mailOptions);
+      const info = await transporter.sendMail(mailOptions);
 
-      console.log("Voucher email sent to hotel");
+      console.log("Voucher email sent to hotel", { messageId: info.messageId, to: bookingEmailTo });
+      }
     } catch(emailErr) {
-      console.error("Email error:", emailErr.message);
+      console.error("Email error:", emailErr.message, emailErr.stack);
     }
 
     // Send WhatsApp notification to admin
@@ -800,8 +814,13 @@ async function confirmAndSave(from, agent, session) {
     try {
       const axios = require("axios");
       const PMS_URL = process.env.PMS_URL || "https://hotelease-pms.onrender.com";
+      const bookingEmailTo = "sukhsagarregencysml@gmail.com";
+      console.log("Booking email: preparing PMS email request", {
+        to: bookingEmailTo,
+        url: PMS_URL + "/api/reservations/send-booking-email"
+      });
       await axios.post(PMS_URL + "/api/reservations/send-booking-email", {
-        to: "sukhsagarregencysml@gmail.com",
+        to: bookingEmailTo,
         confirmNo,
         agentName: agent.name,
         agentPhone: from,
@@ -819,9 +838,9 @@ async function confirmAndSave(from, agent, session) {
         rate: Math.round(rate),
         total: Math.round(grandTotal),
       });
-      console.log("Booking email sent to hotel");
+      console.log("Booking email sent to hotel via PMS", { to: bookingEmailTo });
     } catch(emailErr) {
-      console.error("Email error:", emailErr.message);
+      console.error("Email error:", emailErr.message, emailErr.stack);
     }
 
     sessions[from] = { step: "idle" };
