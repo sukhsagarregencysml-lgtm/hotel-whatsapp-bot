@@ -27,11 +27,23 @@ app.post("/webhook", async (req, res) => {
     const messages = body.entry?.[0]?.changes?.[0]?.value?.messages;
     if (!messages || messages.length === 0) return;
     const msg = messages[0];
-    if (msg.type !== "text") return;
     const from = msg.from;
-    const text = msg.text?.body || "";
-    console.log(`📨 From ${from}: ${text}`);
-    await handleIncoming({ from, text, msgId: msg.id });
+    const msgType = msg.type;
+
+    let text = "";
+    let mediaId = null;
+
+    if (msgType === "text") {
+      text = msg.text?.body || "";
+    } else if (msgType === "image") {
+      mediaId = msg.image?.id || null;
+      text = msg.image?.caption || "";
+    } else {
+      return; // ignore other types
+    }
+
+    console.log(`📨 From ${from} [${msgType}]: ${text}`);
+    await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId });
   } catch (err) {
     console.error("Webhook error:", err.message);
   }
@@ -55,7 +67,6 @@ app.post("/send-optin", async (req, res) => {
     const { pendingOptIns } = require("./handler");
     const { sendMessage } = require("./whatsapp");
 
-    // Store pending opt-in
     pendingOptIns[phone] = {
       guestName, hotelName, reservationId,
       room: room || "Your room",
@@ -65,7 +76,6 @@ app.post("/send-optin", async (req, res) => {
       timestamp: Date.now()
     };
 
-    // Send opt-in request to guest
     const msg = 
       `Dear ${guestName},\n\n` +
       `Your booking at ${hotelName} is confirmed!\n\n` +
@@ -73,7 +83,6 @@ app.post("/send-optin", async (req, res) => {
       `Team ${hotelName}`;
 
     await sendMessage(phone, msg);
-    console.log(`Opt-in request sent to ${phone} for booking ${reservationId}`);
     res.json({ success: true, message: "Opt-in request sent to " + phone });
   } catch (err) {
     console.error("Opt-in error:", err.message);
@@ -131,24 +140,3 @@ app.post("/send-checkout", async (req, res) => {
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));
-
-// -- POST /test-stayezee -- test saveReservation directly ------
-app.post("/test-stayezee", async (req, res) => {
-  try {
-    const { saveReservation } = require("./stayezee");
-    const result = await saveReservation({
-      guestName: req.body.guestName || "Test Guest",
-      guestMobile: req.body.guestMobile || "919816003322",
-      male: 1, female: 0, kids: 0,
-      plan: req.body.plan || "CP",
-      tariff: req.body.tariff || 4100,
-      rooms: req.body.rooms || 1,
-      checkinDate: req.body.checkinDate || "10-05-2026",
-      checkoutDate: req.body.checkoutDate || "12-05-2026",
-      roomType: req.body.roomType || "Deluxe"
-    });
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});

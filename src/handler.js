@@ -15,6 +15,7 @@ const sessions = {};
 const pendingOptIns = {};
 const optedInGuests = {};
 const guestSessions = {};
+const pendingPayments = {}; // phone -> { agentName, amount, total, remaining, voucherNo, ciDate, coDate }
 
 // Hotel info - customize per hotel
 const HOTEL_INFO = {
@@ -55,9 +56,35 @@ async function getAgent(phone) {
   return db.getAgent(phone);
 }
 
-async function handleIncoming({ from, text, msgId }) {
-  const t = text.trim().toUpperCase();
-  console.log(`MSG From ${from}: ${text}`);
+async function handleIncoming({ from, text, msgId, msgType, mediaId }) {
+  const t = (text || "").trim().toUpperCase();
+  console.log(`MSG From ${from}: ${text || "[media]"}`);
+
+  // -- PAYMENT SCREENSHOT HANDLER -----------------------------------------
+  if (msgType === "image" && from !== ADMIN_PHONE) {
+    const pending = pendingPayments[from];
+    if (pending) {
+      // Notify agent
+      await sendMessage(from,
+        `✅ *Screenshot received!*\n\n` +
+        `Voucher: *${pending.voucherNo}*\n` +
+        `Amount: Rs.${pending.amount.toLocaleString()}\n\n` +
+        `Pending admin approval. You will be notified once confirmed. 🙏`
+      );
+      // Notify admin with approve/reject commands
+      await sendReminder(ADMIN_PHONE,
+        `📸 *PAYMENT SCREENSHOT RECEIVED*\n\n` +
+        `Agent: ${pending.agentName} (${from})\n` +
+        `Voucher: ${pending.voucherNo}\n` +
+        `Amount: Rs.${pending.amount.toLocaleString()}\n` +
+        `Guest: ${pending.guestName}\n` +
+        `Check-in: ${fmtDate(pending.ciDate)}\n\n` +
+        `To approve: *APPROVE PAY ${from} ${pending.amount}*\n` +
+        `To reject: *REJECT PAY ${from}*`
+      );
+      return;
+    }
+  }
 
   // -- GUEST OPT-IN HANDLER -----------------------------------------------
   if (t === "YES" || t === "HI" || t === "HELLO" || t === "Y") {
@@ -827,6 +854,53 @@ async function confirmAndSave(from, agent, session) {
 
     await sendReminder(ADMIN_PHONE, adminMsg);
 
+    // Send UPI QR code for advance payment (20%)
+    try {
+      const advanceAmount = Math.round(grandTotal * 0.20);
+      const remaining = grandTotal - advanceAmount;
+      pendingPayments[from] = {
+        agentName: agent.name,
+        agentPhone: from,
+        amount: advanceAmount,
+        total: Math.round(grandTotal),
+        remaining: Math.round(remaining),
+        voucherNo,
+        ciDate: session.ciDate,
+        coDate: session.coDate,
+        guestName: session.guestName,
+      };
+
+      const UPI_ID = process.env.UPI_ID || "9816003322@okbizaxis";
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${advanceAmount}%26cu=INR%26tn=Advance-${voucherNo}`;
+
+      const axios = require("axios");
+      // Send QR image
+      await axios.post(
+        `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
+        {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: from,
+          type: "image",
+          image: {
+            link: qrUrl,
+            caption:
+              `💳 *ADVANCE PAYMENT REQUEST*\n\n` +
+              `Voucher: *${voucherNo}*\n` +
+              `Total Amount: *Rs.${Math.round(grandTotal).toLocaleString()}*\n` +
+              `Advance (20%): *Rs.${advanceAmount.toLocaleString()}*\n` +
+              `Remaining: Rs.${Math.round(remaining).toLocaleString()}\n\n` +
+              `UPI ID: *${UPI_ID}*\n\n` +
+              `📸 Please pay Rs.${advanceAmount.toLocaleString()} and send the *payment screenshot* here to confirm your booking.`
+          }
+        },
+        { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
+      );
+      console.log("UPI QR sent to agent", from);
+    } catch(qrErr) {
+      console.error("QR send error:", qrErr.message);
+    }
+
     // Send email to hotel
     try {
       const axios = require("axios");
@@ -1036,7 +1110,87 @@ async function handleGuest(from, text, t) {
 }
 
 async function handleAdminReply(from, text, t) {
-  await sendMessage(from, `Admin message received: ${text}`);
+  // APPROVE PAY 919XXXXXXXXX 5000
+  if (t.startsWith("APPROVE PAY")) {
+    const parts = text.trim().split(/\s+/);
+    const agentPhone = parts[2];
+    const amount = parseInt(parts[3]);
+    const pending = pendingPayments[agentPhone];
+    if (!pending) {
+      await sendMessage(from, `No pending payment found for ${agentPhone}`);
+      return;
+    }
+    const remaining = pending.total - (amount || pending.amount);
+    // Notify admin
+    await sendMessage(from,
+      `✅ Payment of Rs.${(amount || pending.amount).toLocaleString()} approved for ${pending.agentName} (${agentPhone})\n` +
+      `Voucher: ${pending.voucherNo}\nRemaining: Rs.${remaining.toLocaleString()}`
+    );
+    // Notify agent
+    await sendReminder(agentPhone,
+      `✅ *PAYMENT CONFIRMED*\n\n` +
+      `Voucher: *${pending.voucherNo}*\n` +
+      `Amount Received: *Rs.${(amount || pending.amount).toLocaleString()}*\n` +
+      `Total Booking: Rs.${pending.total.toLocaleString()}\n` +
+      `Remaining Balance: *Rs.${remaining.toLocaleString()}*\n\n` +
+      `Your booking is fully confirmed! 🎉\n` +
+      `Check-in: ${fmtDate(pending.ciDate)}\n` +
+      `Check-out: ${fmtDate(pending.coDate)}\n\n` +
+      `Thank you, ${pending.agentName}! 🙏`
+    );
+    if (remaining > 0) {
+      await sendReminder(agentPhone,
+        `💡 Remaining balance of *Rs.${remaining.toLocaleString()}* to be paid at check-in.`
+      );
+    }
+    delete pendingPayments[agentPhone];
+    return;
+  }
+
+  // REJECT PAY 919XXXXXXXXX
+  if (t.startsWith("REJECT PAY")) {
+    const parts = text.trim().split(/\s+/);
+    const agentPhone = parts[2];
+    const pending = pendingPayments[agentPhone];
+    if (!pending) {
+      await sendMessage(from, `No pending payment found for ${agentPhone}`);
+      return;
+    }
+    await sendMessage(from, `❌ Payment rejected for ${pending.agentName} (${agentPhone})`);
+    await sendReminder(agentPhone,
+      `❌ *PAYMENT NOT CONFIRMED*\n\n` +
+      `Voucher: ${pending.voucherNo}\n` +
+      `Your payment screenshot could not be verified.\n\n` +
+      `Please resend the screenshot or contact hotel:\n📞 +91 98160 03322`
+    );
+    delete pendingPayments[agentPhone];
+    return;
+  }
+
+  // LIST PAY — show all pending payments
+  if (t === "LIST PAY") {
+    const keys = Object.keys(pendingPayments);
+    if (keys.length === 0) {
+      await sendMessage(from, "No pending payments.");
+      return;
+    }
+    const lines = keys.map(k => {
+      const p = pendingPayments[k];
+      return `• ${p.agentName} (${k})\nVoucher: ${p.voucherNo}\nAmount: Rs.${p.amount.toLocaleString()}`;
+    });
+    await sendMessage(from, `📋 *Pending Payments (${keys.length}):*\n\n${lines.join("\n\n")}`);
+    return;
+  }
+
+  await sendMessage(from,
+    `*Admin Commands:*\n\n` +
+    `APPROVE PAY 91XXXXXXXXXX 5000\n` +
+    `REJECT PAY 91XXXXXXXXXX\n` +
+    `LIST PAY\n` +
+    `ADD AGENT 91XXXXXXXXXX Name A/B/C\n` +
+    `REMOVE AGENT 91XXXXXXXXXX\n` +
+    `LIST AGENTS`
+  );
 }
 
 async function safeHandleIncoming(args) {
@@ -1060,4 +1214,4 @@ async function safeHandleIncoming(args) {
   }
 }
 
-module.exports = { handleIncoming: safeHandleIncoming, pendingOptIns, optedInGuests };
+module.exports = { handleIncoming: safeHandleIncoming, pendingOptIns, optedInGuests, pendingPayments };
