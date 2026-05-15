@@ -653,7 +653,22 @@ async function confirmAndSave(from, agent, session) {
       `📞 +91 98160 03322\n` +
       `━━━━━━━━━━━━━━━━━━━━━`;
 
-    await sendMessage(from, voucherMsg);
+    // For guests (never messaged bot) use approved template, else send full voucher
+    const isGuest = agent.category === "Guest";
+    if (isGuest) {
+      // Use hotel_confirmed template — works for any number
+      const { sendTemplate } = require("./whatsapp");
+      await sendTemplate(from, "hotel_confirmed", [
+        fmtDate(session.ciDate),
+        fmtDate(session.coDate),
+        String(session.rooms || 1),
+        session.plan || "CP",
+        String(Math.round(session.rate || 0)),
+        confirmNo
+      ]);
+    } else {
+      await sendMessage(from, voucherMsg);
+    }
 
     // Generate and send PDF voucher
     try {
@@ -791,6 +806,20 @@ async function confirmAndSave(from, agent, session) {
         { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
       );
       console.log("UPI QR sent to agent", from);
+
+      // For guests — also send plain text UPI details via template as fallback
+      if (agent.category === "Guest") {
+        try {
+          // Send UPI details as a second hotel_confirmed template with payment info
+          await sendReminder(from,
+            `💳 *ADVANCE PAYMENT*\n\n` +
+            `Amount: *Rs.${advanceAmount.toLocaleString()}* (20% advance)\n` +
+            `UPI ID: *${UPI_ID}*\n` +
+            `Voucher: ${voucherNo}\n\n` +
+            `Please pay and send screenshot to confirm booking.`
+          );
+        } catch(e) { console.error("Guest payment text error:", e.message); }
+      }
     } catch(qrErr) {
       console.error("QR send error:", qrErr.message);
     }
