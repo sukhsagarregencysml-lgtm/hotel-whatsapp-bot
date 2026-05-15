@@ -21,7 +21,7 @@ function getGST(rate) {
   return rate >= 7500 ? 0.18 : 0.12;
 }
 
-// Base rates (excluding GST)
+// Base rates (GST inclusive)
 const BASE_RATES = {
   deluxe: {
     CP:  { peak: 4100, off: 3000 },
@@ -64,14 +64,9 @@ function getRate(roomType, plan, ciDate, category = "C") {
   const discount = CATEGORY_DISCOUNT[category] || 0;
   const discountedRate = Math.round(baseRate * (1 - discount / 100));
 
-  // For MAPAI - add GST to the rate (rate shown is GST inclusive)
+  // Rates are already GST inclusive — no extra GST added
   let finalRate = discountedRate;
   let gstAmount = 0;
-  if (isMapai) {
-    const gstPct = getGST(discountedRate);
-    gstAmount = Math.round(discountedRate * gstPct);
-    finalRate = discountedRate + gstAmount;
-  }
 
   return {
     rate: finalRate,
