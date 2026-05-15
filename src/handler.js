@@ -1145,16 +1145,29 @@ async function handleAdminReply(from, text, t) {
         await sendMessage(from, `📋 *${guestName}* (${fullPhone}) auto-added as Guest`);
       }
 
-      // Get rate
-      const { getRate } = require("./rates");
-      const rateInfo = getRate(roomType, plan, parsed.ciDate, agent.category === "Guest" ? "C" : agent.category);
-      if (!rateInfo) {
-        await sendMessage(from, `❌ Could not find rate for ${roomType} ${plan}`);
-        return;
+      // Detect admin custom rate — last part if > 500
+      let adminRate = null;
+      const lastPart = parts[parts.length - 1];
+      if (/^\d+$/.test(lastPart) && parseInt(lastPart) > 500 && parseInt(lastPart) !== rooms) {
+        adminRate = parseInt(lastPart);
+      }
+
+      // Get rate — use admin rate if provided, else standard
+      let finalRate;
+      if (adminRate) {
+        finalRate = adminRate;
+      } else {
+        const { getRate } = require("./rates");
+        const rateInfo = getRate(roomType, plan, parsed.ciDate, agent.category === "Guest" ? "C" : agent.category);
+        if (!rateInfo) {
+          await sendMessage(from, `❌ Could not find rate for ${roomType} ${plan}. Add rate at end:\n*BOOK ... 4500*`);
+          return;
+        }
+        finalRate = rateInfo.rate;
       }
 
       const nights = Math.max(1, Math.round((new Date(parsed.coDate) - new Date(parsed.ciDate)) / 86400000));
-      const grandTotal = rateInfo.rate * rooms * nights;
+      const grandTotal = finalRate * rooms * nights;
       const advanceAmount = Math.round(grandTotal * 0.20);
 
       // Build a fake session and call confirmAndSave
@@ -1164,7 +1177,7 @@ async function handleAdminReply(from, text, t) {
         roomType,
         rooms,
         plan: plan.toUpperCase(),
-        rate: rateInfo.rate,
+        rate: finalRate,
         nights,
         adults: parsed.adults || rooms * 2,
         kids: 0,
@@ -1176,34 +1189,25 @@ async function handleAdminReply(from, text, t) {
       };
 
       await sendMessage(from,
-        `⏳ Creating booking for *${guestName}*...
-` +
-        `${fmtDate(parsed.ciDate)} → ${fmtDate(parsed.coDate)}
-` +
-        `${rooms} x ${roomType} | ${plan} | Rs.${Math.round(grandTotal).toLocaleString()}`
+        `⏳ Creating booking for *${guestName}*...\n` +
+        `${fmtDate(parsed.ciDate)} → ${fmtDate(parsed.coDate)}\n` +
+        `${rooms} x ${roomType} | ${plan}\n` +
+        `Rate: Rs.${finalRate.toLocaleString()}/night${adminRate ? " (admin rate)" : ""}\n` +
+        `Total: Rs.${Math.round(grandTotal).toLocaleString()}`
       );
 
       await confirmAndSave(fullPhone, agent, fakeSession);
 
       await sendMessage(from,
-        `✅ *Booking created!*
-
-` +
-        `Guest: ${guestName} (${fullPhone})
-` +
-        `Check-in: ${fmtDate(parsed.ciDate)}
-` +
-        `Check-out: ${fmtDate(parsed.coDate)}
-` +
-        `Rooms: ${rooms} x ${roomType}
-` +
-        `Plan: ${plan}
-` +
-        `Total: Rs.${Math.round(grandTotal).toLocaleString()}
-` +
-        `Advance (20%): Rs.${advanceAmount.toLocaleString()}
-
-` +
+        `✅ *Booking created!*\n\n` +
+        `Guest: ${guestName} (${fullPhone})\n` +
+        `Check-in: ${fmtDate(parsed.ciDate)}\n` +
+        `Check-out: ${fmtDate(parsed.coDate)}\n` +
+        `Rooms: ${rooms} x ${roomType}\n` +
+        `Plan: ${plan}\n` +
+        `Rate: Rs.${finalRate.toLocaleString()}/night${adminRate ? " (admin rate)" : ""}\n` +
+        `Total: Rs.${Math.round(grandTotal).toLocaleString()}\n` +
+        `Advance (20%): Rs.${advanceAmount.toLocaleString()}\n\n` +
         `Voucher + QR sent to ${fullPhone} ✅`
       );
     } catch(err) {
