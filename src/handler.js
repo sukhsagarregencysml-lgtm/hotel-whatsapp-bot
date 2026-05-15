@@ -1076,8 +1076,146 @@ async function handleAdminReply(from, text, t) {
     return;
   }
 
+  // BOOK 919876543210 Rahul Singh 22july 24july 2 deluxe CP
+  if (t.startsWith("BOOK ")) {
+    try {
+      // Parse: BOOK <phone> <name...> <ciDate> <coDate> <rooms> <roomType> <plan>
+      const parts = text.trim().split(/\s+/);
+      // parts[0] = BOOK
+      // parts[1] = phone
+      // Last 3 parts = rooms, roomType, plan (optional)
+      // Middle parts = name + dates
+
+      const guestPhone = parts[1].replace(/\D/g, "");
+      const fullPhone = guestPhone.startsWith("91") ? guestPhone : "91" + guestPhone;
+
+      // Detect plan at end
+      let plan = "CP";
+      let lastIdx = parts.length - 1;
+      if (/^(CP|MAP|MAPAI|EP)$/i.test(parts[lastIdx])) {
+        plan = parts[lastIdx].toUpperCase();
+        lastIdx--;
+      }
+
+      // Detect roomType
+      let roomType = "deluxe";
+      if (/^(deluxe|dlx|superdeluxe|sdlx|honeymoon|honey|hm)$/i.test(parts[lastIdx])) {
+        const rt = parts[lastIdx].toLowerCase();
+        if (rt.includes("super") || rt === "sdlx") roomType = "superdeluxe";
+        else if (rt.includes("honey") || rt === "hm") roomType = "honeymoon";
+        else roomType = "deluxe";
+        lastIdx--;
+      }
+
+      // Detect rooms count
+      let rooms = 1;
+      if (/^\d+$/.test(parts[lastIdx]) && parseInt(parts[lastIdx]) <= 20) {
+        rooms = parseInt(parts[lastIdx]);
+        lastIdx--;
+      }
+
+      // Remaining middle parts after phone = name + dates
+      // Try to extract 2 dates from remaining text
+      const middleText = parts.slice(2, lastIdx + 1).join(" ");
+      const { parseEnquiry } = require("./parser");
+      const parsed = parseEnquiry(middleText + " " + rooms + " " + roomType + " " + plan);
+
+      if (!parsed || !parsed.ciDate || !parsed.coDate) {
+        await sendMessage(from,
+          `❌ Could not parse dates. Format:
+
+` +
+          `*BOOK 919876543210 Rahul Singh 22july 24july 2 deluxe CP*`
+        );
+        return;
+      }
+
+      // Extract guest name (parts between phone and first date)
+      // Find where dates start in middleText
+      const dateRe = /\d{1,2}[\.\-\/]\d{1,2}|\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
+      const dateMatch = middleText.search(dateRe);
+      const guestName = dateMatch > 0 ? middleText.slice(0, dateMatch).trim() : "Guest";
+
+      // Check if number exists in agents, if not auto-add as Guest category
+      const { getAgent, addAgent } = require("./agents");
+      let agent = await getAgent(fullPhone);
+      if (!agent) {
+        await addAgent(fullPhone, guestName, "Guest");
+        agent = { phone: fullPhone, name: guestName, category: "Guest" };
+        await sendMessage(from, `📋 *${guestName}* (${fullPhone}) auto-added as Guest`);
+      }
+
+      // Get rate
+      const { getRate } = require("./rates");
+      const rateInfo = getRate(roomType, plan, parsed.ciDate, agent.category === "Guest" ? "C" : agent.category);
+      if (!rateInfo) {
+        await sendMessage(from, `❌ Could not find rate for ${roomType} ${plan}`);
+        return;
+      }
+
+      const nights = Math.max(1, Math.round((new Date(parsed.coDate) - new Date(parsed.ciDate)) / 86400000));
+      const grandTotal = rateInfo.rate * rooms * nights;
+      const advanceAmount = Math.round(grandTotal * 0.20);
+
+      // Build a fake session and call confirmAndSave
+      const fakeSession = {
+        ciDate: parsed.ciDate,
+        coDate: parsed.coDate,
+        roomType,
+        rooms,
+        plan: plan.toUpperCase(),
+        rate: rateInfo.rate,
+        nights,
+        adults: parsed.adults || rooms * 2,
+        kids: 0,
+        guestName,
+        guestMobile: fullPhone,
+        extraBed: 0,
+        extraBedCharge: 0,
+        extraBedType: null,
+      };
+
+      await sendMessage(from,
+        `⏳ Creating booking for *${guestName}*...
+` +
+        `${fmtDate(parsed.ciDate)} → ${fmtDate(parsed.coDate)}
+` +
+        `${rooms} x ${roomType} | ${plan} | Rs.${Math.round(grandTotal).toLocaleString()}`
+      );
+
+      await confirmAndSave(fullPhone, agent, fakeSession);
+
+      await sendMessage(from,
+        `✅ *Booking created!*
+
+` +
+        `Guest: ${guestName} (${fullPhone})
+` +
+        `Check-in: ${fmtDate(parsed.ciDate)}
+` +
+        `Check-out: ${fmtDate(parsed.coDate)}
+` +
+        `Rooms: ${rooms} x ${roomType}
+` +
+        `Plan: ${plan}
+` +
+        `Total: Rs.${Math.round(grandTotal).toLocaleString()}
+` +
+        `Advance (20%): Rs.${advanceAmount.toLocaleString()}
+
+` +
+        `Voucher + QR sent to ${fullPhone} ✅`
+      );
+    } catch(err) {
+      console.error("Admin BOOK error:", err.message);
+      await sendMessage(from, `❌ Booking failed: ${err.message}`);
+    }
+    return;
+  }
+
   await sendMessage(from,
     `*Admin Commands:*\n\n` +
+    `BOOK 91XXXXXXXXXX Name 22july 24july 2 deluxe CP\n` +
     `APPROVE PAY 91XXXXXXXXXX 5000\n` +
     `REJECT PAY 91XXXXXXXXXX\n` +
     `LIST PAY\n` +
