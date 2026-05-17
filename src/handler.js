@@ -236,21 +236,38 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId }) {
   // Step: awaiting confirm
   if (session.step === "awaiting_confirm") {
     // Handle room upgrade
-    if (["SUPER","SUPERDELUXE","SDL","SDX"].includes(t)) {
+    // Super Deluxe upgrade
+    const isSuperUpgrade = [
+      "SUPER","SUPERDELUXE","SUPER DELUXE","SDL","SDX","SDLX",
+      "SUPER DLX","SUPER DEL","S DLX","SD","UPGRADE SUPER",
+      "UPGRADE SDL","UPGRADE SUPERDELUXE","UPGRADE SUPER DELUXE"
+    ].includes(t);
+    if (isSuperUpgrade) {
       session.roomType = "superdeluxe";
       session.roomTypes = [{ type: "superdeluxe", count: session.rooms }];
       await sendMessage(from, `Dear *${agent.name}*, checking Super Deluxe availability...`);
       await checkAndRespond(from, agent, session);
       return;
     }
-    if (["HONEY","HONEYMOON","HM"].includes(t)) {
+    // Honeymoon upgrade
+    const isHoneyUpgrade = [
+      "HONEY","HONEYMOON","HONEY MOON","HM","HMOON",
+      "HON","UPGRADE HONEY","UPGRADE HM","UPGRADE HONEYMOON",
+      "UPGRADE HONEY MOON","HONEYMOON ROOM"
+    ].includes(t);
+    if (isHoneyUpgrade) {
       session.roomType = "honeymoon";
       session.roomTypes = [{ type: "honeymoon", count: session.rooms }];
       await sendMessage(from, `Dear *${agent.name}*, checking Honeymoon availability...`);
       await checkAndRespond(from, agent, session);
       return;
     }
-    if (["DELUXE","DLX","DEL"].includes(t)) {
+    // Deluxe (downgrade back)
+    const isDeluxeDowngrade = [
+      "DELUXE","DLX","DEL","DELX","UPGRADE DELUXE",
+      "DOWNGRADE","NORMAL","STANDARD","BASIC","REGULAR"
+    ].includes(t);
+    if (isDeluxeDowngrade) {
       session.roomType = "deluxe";
       session.roomTypes = [{ type: "deluxe", count: session.rooms }];
       await sendMessage(from, `Dear *${agent.name}*, checking Deluxe availability...`);
