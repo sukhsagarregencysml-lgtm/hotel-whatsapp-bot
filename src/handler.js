@@ -1,7 +1,7 @@
 "use strict";
 const { parseEnquiry } = require("./parser");
 const { checkAvailability } = require("./stayezee");
-const { getRate } = require("./rates");
+const { getRate, getCustomerRate, CUSTOMER_EXTRAS } = require("./rates");
 const { saveReservation } = require("./stayezee");
 const {
   sendMessage, sendTemplate, sendReminder, sendEnquiryAck,
@@ -116,7 +116,16 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId }) {
 
   // -- CHECK IF REGISTERED AGENT ------------------------------------------
   const agent = await getAgent(from);
-  if (!agent) {
+  if (!agent || agent.category === "Guest") {
+    // Guests added by admin should not get agent booking flow
+    // Handle payment screenshot from guests
+    if (agent && agent.category === "Guest") {
+      // Only handle payment screenshot — rest goes to guest flow
+      if (sessions[from]?.step && sessions[from].step !== "idle") {
+        // clear any accidental agent session
+        sessions[from] = { step: "idle" };
+      }
+    }
     await handleGuest(from, text, t);
     return;
   }
@@ -653,19 +662,17 @@ async function confirmAndSave(from, agent, session) {
       `📞 +91 98160 03322\n` +
       `━━━━━━━━━━━━━━━━━━━━━`;
 
-    // For guests (never messaged bot) use approved template, else send full voucher
-    const isGuest = agent.category === "Guest";
-    if (isGuest) {
-      // Use hotel_confirmed template — works for any number
-      const { sendTemplate } = require("./whatsapp");
-      await sendTemplate(from, "hotel_confirmed", [
-        fmtDate(session.ciDate),
-        fmtDate(session.coDate),
-        String(session.rooms || 1),
-        session.plan || "CP",
-        String(Math.round(session.rate || 0)),
-        confirmNo
-      ]);
+    // Guests added by admin — use approved template (works for any number)
+    // Agents — send full voucher text
+    if (agent.category === "Guest") {
+      await sendConfirmed(from, {
+        ciDate: session.ciDate,
+        coDate: session.coDate,
+        rooms: session.rooms || 1,
+        plan: session.plan || "CP",
+        rate: Math.round(session.rate || 0),
+        confirmationNumber: confirmNo
+      });
     } else {
       await sendMessage(from, voucherMsg);
     }
@@ -894,14 +901,30 @@ async function handleGuest(from, text, t) {
   // Show main menu
   if (["HI","HELLO","START","MENU","0","HOME","1","2","3","4","5"].includes(t) || session.step === "start") {
     if (t === "1" || session.pendingMenu === "1") {
-      // Availability - tell them to call
+      // Show rates and ask for enquiry
       await sendMessage(from,
-        `For room bookings, please contact us:\n\n` +
-        `📞 *${HOTEL_INFO.phone}*\n` +
-        `📍 ${HOTEL_INFO.location}\n\n` +
-        `Or share your *Booking ID* if you have an existing booking.`
+        `*🏨 Hotel Sukhsagar Regency — Room Rates*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `*🌸 Peak Season* (15 Apr - 30 Jun)\n` +
+        `Deluxe:       CP Rs.5100 | MAP Rs.6100\n` +
+        `Super Deluxe: CP Rs.5700 | MAP Rs.6750\n` +
+        `Honeymoon:    CP Rs.6350 | MAP Rs.7400\n\n` +
+        `*🍂 Off Season* (1 Jul - 20 Dec)\n` +
+        `Deluxe:       CP Rs.4475 | MAP Rs.5500\n` +
+        `Super Deluxe: CP Rs.5100 | MAP Rs.6100\n` +
+        `Honeymoon:    CP Rs.6750 | MAP Rs.6750\n\n` +
+        `*Extra Charges:*\n` +
+        `Child with bed (MAPAI): Rs.1300\n` +
+        `Child with bed (CPAI): Rs.800\n` +
+        `Child no bed (>5yr): Rs.800\n` +
+        `Child no bed (<5yr): Rs.400\n` +
+        `Extra person: Rs.500\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n` +
+        `To check availability, send your dates like:\n` +
+        `*22 July to 24 July, 2 adults, Deluxe, CP*\n\n` +
+        `Reply *0* to go back to menu.`
       );
-      session.step = "start";
+      session.step = "enquiry";
       return;
     }
     if (t === "2") {
@@ -975,6 +998,164 @@ async function handleGuest(from, text, t) {
       `Or share your *Booking ID* to get your booking details.`
     );
     session.step = "menu";
+    return;
+  }
+
+  // Handle enquiry step — parse dates and show availability
+  if (session.step === "enquiry" || session.step === "awaiting_plan" || 
+      session.step === "awaiting_confirm_customer") {
+
+    // Awaiting plan
+    if (session.step === "awaiting_plan") {
+      const planMap = { CP: "CP", MAP: "MAP", MAPAI: "MAPAI", EP: "EP" };
+      const planInput = t.trim().toUpperCase();
+      if (planMap[planInput]) {
+        session.plan = planMap[planInput];
+        session.step = "awaiting_confirm_customer";
+      } else {
+        await sendMessage(from, `Please reply with:\n*CP* - With Breakfast\n*MAP* - Breakfast & Dinner\n*MAPAI* - All Inclusive\n*EP* - Room Only`);
+        return;
+      }
+    }
+
+    // Parse enquiry
+    if (session.step === "enquiry") {
+      const { parseEnquiry } = require("./parser");
+      const parsed = parseEnquiry(text);
+      if (!parsed || !parsed.ciDate) {
+        await sendMessage(from,
+          `Please share your dates like:\n` +
+          `*22 July to 24 July, 2 adults, Deluxe, CP*\n\n` +
+          `Reply *0* for main menu.`
+        );
+        return;
+      }
+      session.ciDate = parsed.ciDate;
+      session.coDate = parsed.coDate;
+      session.rooms = parsed.rooms || 1;
+      session.roomType = parsed.roomType || "deluxe";
+      session.adults = parsed.adults || 2;
+      session.kids = parsed.kids || 0;
+      session.plan = parsed.plan;
+
+      if (!session.plan) {
+        await sendMessage(from,
+          `Which meal plan?\n\n` +
+          `*CP* - With Breakfast\n` +
+          `*MAP* - Breakfast & Dinner\n` +
+          `*MAPAI* - All Inclusive\n` +
+          `*EP* - Room Only`
+        );
+        session.step = "awaiting_plan";
+        return;
+      }
+      session.step = "awaiting_confirm_customer";
+    }
+
+    // Show rate and ask for confirm
+    if (session.step === "awaiting_confirm_customer") {
+      const { checkAvailability } = require("./stayezee");
+      const avail = await checkAvailability({ ciDate: session.ciDate, coDate: session.coDate, rooms: session.rooms });
+
+      if (!avail.available) {
+        await sendMessage(from,
+          `Sorry, rooms are not available for selected dates.\n\n` +
+          `Please try different dates or contact us:\n📞 *${HOTEL_INFO.phone}*`
+        );
+        session.step = "enquiry";
+        return;
+      }
+
+      const rateInfo = getCustomerRate(session.roomType, session.plan, session.ciDate);
+      if (!rateInfo) {
+        await sendMessage(from, `Could not find rate. Please contact us:\n📞 *${HOTEL_INFO.phone}*`);
+        return;
+      }
+
+      const nights = Math.max(1, Math.round((new Date(session.coDate) - new Date(session.ciDate)) / 86400000));
+      session.rate = rateInfo.rate;
+      session.nights = nights;
+      const grandTotal = rateInfo.rate * session.rooms * nights;
+      session.grandTotal = grandTotal;
+
+      const pmsRoomType = session.roomType === "honeymoon" ? "Honeymoon" :
+                          session.roomType === "superdeluxe" ? "Super Deluxe" : "Deluxe";
+
+      await sendMessage(from,
+        `✅ *Rooms Available!*\n\n` +
+        `📅 Check-in:  *${fmtDate(session.ciDate)}*\n` +
+        `📅 Check-out: *${fmtDate(session.coDate)}*\n` +
+        `🌙 Nights:    *${nights}*\n` +
+        `🛏 Room:      *${session.rooms} x ${pmsRoomType}*\n` +
+        `🍽 Plan:      *${session.plan}*\n` +
+        `💰 Rate:      *Rs.${rateInfo.rate.toLocaleString()}/night*\n` +
+        `💳 Total:     *Rs.${grandTotal.toLocaleString()}*\n\n` +
+        `To confirm booking reply *YES*\n` +
+        `To change dates reply *NO*\n` +
+        `Reply *0* for main menu.`
+      );
+      session.step = "confirm_customer";
+      return;
+    }
+  }
+
+  // Customer confirms booking
+  if (session.step === "confirm_customer") {
+    if (["YES","Y","CONFIRM","OK","HAAN","HA"].includes(t)) {
+      await sendMessage(from, `Please share your *full name*:`);
+      session.step = "customer_name";
+      return;
+    }
+    if (["NO","N","NAHI","CHANGE"].includes(t)) {
+      await sendMessage(from, `Please send your new dates:\nExample: *22 July to 24 July, 2 adults, Deluxe, CP*`);
+      session.step = "enquiry";
+      return;
+    }
+  }
+
+  // Get customer name
+  if (session.step === "customer_name") {
+    session.guestName = text.trim();
+    await sendMessage(from, `Thank you *${session.guestName}*! Please share your *mobile number*:`);
+    session.step = "customer_mobile";
+    return;
+  }
+
+  // Get customer mobile
+  if (session.step === "customer_mobile") {
+    const mobile = text.replace(/\D/g, "");
+    session.guestMobile = mobile.startsWith("91") ? mobile : "91" + mobile;
+
+    // Create fake agent for customer (category C rates already applied)
+    const fakeAgent = { name: session.guestName, phone: from, category: "C" };
+
+    await sendMessage(from, `⏳ Confirming your booking...`);
+
+    try {
+      await confirmAndSave(from, fakeAgent, {
+        ciDate: session.ciDate,
+        coDate: session.coDate,
+        roomType: session.roomType,
+        rooms: session.rooms,
+        plan: session.plan,
+        rate: session.rate,
+        nights: session.nights,
+        adults: session.adults || 2,
+        kids: session.kids || 0,
+        guestName: session.guestName,
+        guestMobile: session.guestMobile,
+        extraBed: 0,
+        extraBedCharge: 0,
+        extraBedType: null,
+      });
+      guestSessions[from] = { step: "start" };
+    } catch(err) {
+      console.error("Customer booking error:", err.message);
+      await sendMessage(from,
+        `Sorry, booking could not be confirmed right now.\n\n` +
+        `Please contact us:\n📞 *${HOTEL_INFO.phone}*`
+      );
+    }
     return;
   }
 
@@ -1186,7 +1367,7 @@ async function handleAdminReply(from, text, t) {
       if (adminRate) {
         finalRate = adminRate;
       } else {
-        const { getRate } = require("./rates");
+        const { getRate, getCustomerRate, CUSTOMER_EXTRAS } = require("./rates");
         const rateInfo = getRate(roomType, plan, parsed.ciDate, agent.category === "Guest" ? "C" : agent.category);
         if (!rateInfo) {
           await sendMessage(from, `❌ Could not find rate for ${roomType} ${plan}. Add rate at end:\n*BOOK ... 4500*`);

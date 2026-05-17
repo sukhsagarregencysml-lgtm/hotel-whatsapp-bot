@@ -87,4 +87,53 @@ function parseRoomType(text) {
   return "deluxe";
 }
 
-module.exports = { getRate, getSeason, parseRoomType, getGST };
+// Customer rates (actual/brochure rates — no agent discount)
+const CUSTOMER_RATES = {
+  deluxe: {
+    CP:  { peak: 5100, off: 4475 },
+    MAP: { peak: 6100, off: 5500 },
+    EP:  { peak: 4500, off: 3800 },
+  },
+  superdeluxe: {
+    CP:  { peak: 5700, off: 5100 },
+    MAP: { peak: 6750, off: 6100 },
+    EP:  { peak: 5000, off: 4500 },
+  },
+  honeymoon: {
+    CP:  { peak: 6350, off: 6750 },
+    MAP: { peak: 7400, off: 6750 },
+    EP:  { peak: 5500, off: 5000 },
+  },
+};
+
+// Extra charges for customers
+const CUSTOMER_EXTRAS = {
+  mapaicwb: 1300,  // Child with bed MAPAI
+  cpaicwb: 800,    // Child with bed CPAI
+  cnbAbove5: 800,  // Child no bed above 5yr
+  cnbBelow5: 400,  // Child no bed below 5yr
+  extraPerson: 500,
+};
+
+function getCustomerRate(roomType, plan, ciDate) {
+  const season = getSeason(ciDate);
+  const roomKey = roomType.toLowerCase().replace(/\s/g, "").replace("-", "");
+  const isMapai = plan.toUpperCase() === 'MAPAI';
+  const planKey = isMapai ? 'MAP' : plan.toUpperCase();
+
+  let baseRate = null;
+  if (roomKey.includes("honey")) baseRate = CUSTOMER_RATES.honeymoon?.[planKey]?.[season];
+  else if (roomKey.includes("super")) baseRate = CUSTOMER_RATES.superdeluxe?.[planKey]?.[season];
+  else baseRate = CUSTOMER_RATES.deluxe?.[planKey]?.[season];
+
+  if (!baseRate) return null;
+
+  return {
+    rate: baseRate,
+    season,
+    isMapai,
+    roomType: roomKey.includes("honey") ? "Honeymoon" : roomKey.includes("super") ? "Super Deluxe" : "Deluxe",
+  };
+}
+
+module.exports = { getRate, getCustomerRate, CUSTOMER_EXTRAS, getSeason, parseRoomType, getGST };
