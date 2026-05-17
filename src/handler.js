@@ -235,6 +235,28 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId }) {
 
   // Step: awaiting confirm
   if (session.step === "awaiting_confirm") {
+    // Handle room upgrade
+    if (["SUPER","SUPERDELUXE","SDL","SDX"].includes(t)) {
+      session.roomType = "superdeluxe";
+      session.roomTypes = [{ type: "superdeluxe", count: session.rooms }];
+      await sendMessage(from, `Dear *${agent.name}*, checking Super Deluxe availability...`);
+      await checkAndRespond(from, agent, session);
+      return;
+    }
+    if (["HONEY","HONEYMOON","HM"].includes(t)) {
+      session.roomType = "honeymoon";
+      session.roomTypes = [{ type: "honeymoon", count: session.rooms }];
+      await sendMessage(from, `Dear *${agent.name}*, checking Honeymoon availability...`);
+      await checkAndRespond(from, agent, session);
+      return;
+    }
+    if (["DELUXE","DLX","DEL"].includes(t)) {
+      session.roomType = "deluxe";
+      session.roomTypes = [{ type: "deluxe", count: session.rooms }];
+      await sendMessage(from, `Dear *${agent.name}*, checking Deluxe availability...`);
+      await checkAndRespond(from, agent, session);
+      return;
+    }
     if (["YES","Y","CONFIRM","OK","HAAN","HA"].includes(t)) {
       // Clear timeout if exists
       if (session.timeoutId) {
@@ -517,6 +539,21 @@ async function checkAndRespond(from, agent, session) {
       rateMsg += `Nights: *${nights}*\nPlan: *${plan}*\n`;
       rateMsg += `Total (without extra bed): *Rs.${grandTotal.toLocaleString()}*\n\n`;
       rateMsg += `Reply *YES* to confirm or *NO* to cancel\n\n`;
+
+      // Add upgrade options based on current room type
+      const currentType = (session.roomTypes?.[0]?.type || session.roomType || "deluxe").toLowerCase();
+      if (currentType.includes("deluxe") && !currentType.includes("super")) {
+        const sdRate = getRate("superdeluxe", plan, session.ciDate, agent.category);
+        const hmRate = getRate("honeymoon", plan, session.ciDate, agent.category);
+        rateMsg += `🔼 *Upgrade options:*\n`;
+        rateMsg += `Reply *SUPER* → Super Deluxe (Rs.${sdRate?.rate?.toLocaleString()}/night)\n`;
+        rateMsg += `Reply *HONEY* → Honeymoon (Rs.${hmRate?.rate?.toLocaleString()}/night)\n\n`;
+      } else if (currentType.includes("super")) {
+        const hmRate = getRate("honeymoon", plan, session.ciDate, agent.category);
+        rateMsg += `🔼 *Upgrade option:*\n`;
+        rateMsg += `Reply *HONEY* → Honeymoon (Rs.${hmRate?.rate?.toLocaleString()}/night)\n\n`;
+      }
+
       rateMsg += `---------------------------\n`;
       rateMsg += `📸 Photos: https://www.sukhsagarregency.com\n`;
       rateMsg += `📍 Location: https://maps.google.com/?q=31.078199,77.140404`;
@@ -901,27 +938,13 @@ async function handleGuest(from, text, t) {
   // Show main menu
   if (["HI","HELLO","START","MENU","0","HOME","1","2","3","4","5"].includes(t) || session.step === "start") {
     if (t === "1" || session.pendingMenu === "1") {
-      // Show rates and ask for enquiry
+      // Ask for dates directly
       await sendMessage(from,
-        `*🏨 Hotel Sukhsagar Regency — Room Rates*\n` +
-        `━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `*🌸 Peak Season* (15 Apr - 30 Jun)\n` +
-        `Deluxe:       CP Rs.5100 | MAP Rs.6100\n` +
-        `Super Deluxe: CP Rs.5700 | MAP Rs.6750\n` +
-        `Honeymoon:    CP Rs.6350 | MAP Rs.7400\n\n` +
-        `*🍂 Off Season* (1 Jul - 20 Dec)\n` +
-        `Deluxe:       CP Rs.4475 | MAP Rs.5500\n` +
-        `Super Deluxe: CP Rs.5100 | MAP Rs.6100\n` +
-        `Honeymoon:    CP Rs.6750 | MAP Rs.6750\n\n` +
-        `*Extra Charges:*\n` +
-        `Child with bed (MAPAI): Rs.1300\n` +
-        `Child with bed (CPAI): Rs.800\n` +
-        `Child no bed (>5yr): Rs.800\n` +
-        `Child no bed (<5yr): Rs.400\n` +
-        `Extra person: Rs.500\n\n` +
-        `━━━━━━━━━━━━━━━━━━━━━\n` +
-        `To check availability, send your dates like:\n` +
+        `Please share your stay details to check availability:\n\n` +
+        `Example:\n` +
         `*22 July to 24 July, 2 adults, Deluxe, CP*\n\n` +
+        `Room types: Deluxe, Super Deluxe, Honeymoon\n` +
+        `Plans: CP (Breakfast) | MAP (Breakfast+Dinner) | EP (Room only)\n\n` +
         `Reply *0* to go back to menu.`
       );
       session.step = "enquiry";
@@ -1081,6 +1104,8 @@ async function handleGuest(from, text, t) {
       const pmsRoomType = session.roomType === "honeymoon" ? "Honeymoon" :
                           session.roomType === "superdeluxe" ? "Super Deluxe" : "Deluxe";
 
+      const extraPerson = 500;
+      const childNoBed = 300;
       await sendMessage(from,
         `✅ *Rooms Available!*\n\n` +
         `📅 Check-in:  *${fmtDate(session.ciDate)}*\n` +
@@ -1089,6 +1114,7 @@ async function handleGuest(from, text, t) {
         `🛏 Room:      *${session.rooms} x ${pmsRoomType}*\n` +
         `🍽 Plan:      *${session.plan}*\n` +
         `💰 Rate:      *Rs.${rateInfo.rate.toLocaleString()}/night*\n` +
+        `👤 Extra person: *Rs.${extraPerson}/night*\n` +
         `💳 Total:     *Rs.${grandTotal.toLocaleString()}*\n\n` +
         `To confirm booking reply *YES*\n` +
         `To change dates reply *NO*\n` +
