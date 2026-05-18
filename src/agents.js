@@ -94,4 +94,120 @@ async function listAgents() {
   return `📋 *Active Agents (${agents.length}):*\n\n${lines.join("\n")}\n\n_ADD AGENT 91XXXXXXXXXX Name A/B/C_\n_REMOVE AGENT 91XXXXXXXXXX_`;
 }
 
-module.exports = { isAgent, getAgent, addAgent, removeAgent, listAgents, getAllAgents };
+// ── BOOKING TALLY (financial year tracking) ──────────────────
+const TALLY_SHEET = "BookingTally";
+
+function getFinancialYear() {
+  const now = new Date();
+  const month = now.getMonth(); // 0=Jan
+  const year = now.getFullYear();
+  // Financial year: April to March
+  return month >= 3 ? `${year}-${year+1}` : `${year-1}-${year}`;
+}
+
+async function getTally(phone) {
+  try {
+    const fy = getFinancialYear();
+    const auth = getAuth();
+    const sheets = google.sheets({ version: "v4", auth });
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `${TALLY_SHEET}!A:F`,
+    });
+    const rows = res.data.values || [];
+    const row = rows.find(r => r[0]?.toString().trim() === phone && r[4]?.toString().trim() === fy);
+    if (!row) return { phone, fy, roomsBooked: 0, freeRoomsEarned: 0, freeRoomsUsed: 0 };
+    return {
+      phone,
+      fy,
+      roomsBooked: parseInt(row[2] || 0),
+      freeRoomsEarned: parseInt(row[3] || 0),
+      freeRoomsUsed: parseInt(row[4] || 0),
+      rowIndex: rows.indexOf(row),
+    };
+  } catch (err) {
+    console.error("getTally error:", err.message);
+    return { phone, fy: getFinancialYear(), roomsBooked: 0, freeRoomsEarned: 0, freeRoomsUsed: 0 };
+  }
+}
+
+async function updateTally(phone, agentName, roomsToAdd) {
+  try {
+    const fy = getFinancialYear();
+    const auth = getAuth();
+    const sheets = google.sheets({ version: "v4", auth });
+
+    // Get current tally
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `${TALLY_SHEET}!A:F`,
+    });
+    const rows = res.data.values || [];
+    const rowIdx = rows.findIndex(r => r[0]?.toString().trim() === phone && r[5]?.toString().trim() === fy);
+
+    const currentRooms = rowIdx >= 0 ? parseInt(rows[rowIdx][2] || 0) : 0;
+    const currentEarned = rowIdx >= 0 ? parseInt(rows[rowIdx][3] || 0) : 0;
+    const currentUsed = rowIdx >= 0 ? parseInt(rows[rowIdx][4] || 0) : 0;
+
+    const newRooms = currentRooms + roomsToAdd;
+    const newEarned = Math.floor(newRooms / 10);
+    const newlyEarned = newEarned - currentEarned;
+
+    // Free rooms available = earned - used
+    const freeRoomsAvailable = newEarned - currentUsed;
+
+    const now = new Date().toLocaleDateString("en-IN");
+
+    if (rowIdx >= 0) {
+      // Update existing row
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: `${TALLY_SHEET}!A${rowIdx + 1}:F${rowIdx + 1}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[phone, agentName, newRooms, newEarned, currentUsed, fy]] },
+      });
+    } else {
+      // Add new row
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: `${TALLY_SHEET}!A:F`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[phone, agentName, newRooms, newEarned, 0, fy]] },
+      });
+    }
+
+    return { newRooms, newEarned, newlyEarned, freeRoomsAvailable, currentUsed };
+  } catch (err) {
+    console.error("updateTally error:", err.message);
+    return { newRooms: 0, newEarned: 0, newlyEarned: 0, freeRoomsAvailable: 0, currentUsed: 0 };
+  }
+}
+
+async function useFreeRooms(phone, agentName, count) {
+  try {
+    const fy = getFinancialYear();
+    const auth = getAuth();
+    const sheets = google.sheets({ version: "v4", auth });
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `${TALLY_SHEET}!A:F`,
+    });
+    const rows = res.data.values || [];
+    const rowIdx = rows.findIndex(r => r[0]?.toString().trim() === phone && r[5]?.toString().trim() === fy);
+    if (rowIdx < 0) return false;
+    const currentUsed = parseInt(rows[rowIdx][4] || 0);
+    const newUsed = currentUsed + count;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `${TALLY_SHEET}!E${rowIdx + 1}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[newUsed]] },
+    });
+    return true;
+  } catch (err) {
+    console.error("useFreeRooms error:", err.message);
+    return false;
+  }
+}
+
+module.exports = { isAgent, getAgent, addAgent, removeAgent, listAgents, getAllAgents, getTally, updateTally, useFreeRooms, getFinancialYear };

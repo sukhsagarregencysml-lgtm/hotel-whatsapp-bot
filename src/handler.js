@@ -1,5 +1,6 @@
 "use strict";
 const { parseEnquiry } = require("./parser");
+const { getTally, updateTally, useFreeRooms } = require("./agents");
 const { checkAvailability } = require("./stayezee");
 const { getRate, getCustomerRate, CUSTOMER_EXTRAS } = require("./rates");
 const { saveReservation } = require("./stayezee");
@@ -535,6 +536,19 @@ async function checkAndRespond(from, agent, session) {
         ? session.roomTypes
         : [{ type: session.roomType || "deluxe", count: session.rooms }];
 
+      // Get cumulative tally for this agent (financial year)
+      const tally = await getTally(from);
+      const totalRoomsThisBooking = roomTypesList.reduce((s, r) => s + r.count, 0);
+      const roomsAfterBooking = tally.roomsBooked + totalRoomsThisBooking;
+      const freeRoomsAvailable = Math.floor(tally.roomsBooked / 10) - (tally.freeRoomsUsed || 0);
+      const newFreeRoomsEarned = Math.floor(roomsAfterBooking / 10) - Math.floor(tally.roomsBooked / 10);
+
+      // Free rooms to apply = available + newly earned
+      const freeRoomsToApply = freeRoomsAvailable + newFreeRoomsEarned;
+      const freeRoomRate = getRate("deluxe", "CP", session.ciDate, agent.category);
+      const freeRoomValuePerNight = freeRoomRate?.rate || 0;
+      const freeRoomDiscount = freeRoomsToApply > 0 ? freeRoomValuePerNight * freeRoomsToApply * nights : 0;
+
       for (const rt of roomTypesList) {
         const rateInfo = getRate(rt.type, plan, session.ciDate, agent.category);
         const rate = rateInfo?.rate || 0;
@@ -551,10 +565,37 @@ async function checkAndRespond(from, agent, session) {
         rateMsg += `  With extra bed (under 5 yrs): *Rs.${rate.toLocaleString()}/night* (FREE)\n\n`;
       }
 
+      // Apply free room discount if available
+      if (freeRoomsToApply > 0) {
+        grandTotal -= freeRoomDiscount;
+        session.freeRoomsApplied = freeRoomsToApply;
+        session.freeRoomDiscount = freeRoomDiscount;
+      } else {
+        session.freeRoomsApplied = 0;
+        session.freeRoomDiscount = 0;
+      }
+
+      // Show tally progress
+      const roomsNeededForNext = 10 - (roomsAfterBooking % 10);
+
       rateMsg += `Check-in: *${fmtDate(session.ciDate)}*\n`;
       rateMsg += `Check-out: *${fmtDate(session.coDate)}*\n`;
-      rateMsg += `Nights: *${nights}*\nPlan: *${plan}*\n`;
-      rateMsg += `Total (without extra bed): *Rs.${grandTotal.toLocaleString()}*\n\n`;
+      rateMsg += `Nights: *${nights}*\nPlan: *${plan}*\n\n`;
+
+      if (freeRoomsToApply > 0) {
+        rateMsg += `🎁 *FREE ROOM APPLIED!*\n`;
+        rateMsg += `${freeRoomsToApply} Deluxe CP room${freeRoomsToApply > 1 ? "s" : ""} FREE (FY tally)\n`;
+        rateMsg += `Discount: -Rs.${Math.round(freeRoomDiscount).toLocaleString()}\n`;
+        rateMsg += `*Total after discount: Rs.${Math.round(grandTotal).toLocaleString()}*\n\n`;
+      } else {
+        rateMsg += `Total (without extra bed): *Rs.${Math.round(grandTotal).toLocaleString()}*\n`;
+        rateMsg += `📊 FY Tally: ${tally.roomsBooked} rooms booked → ${roomsNeededForNext} more for next FREE room\n\n`;
+      }
+
+      if (newFreeRoomsEarned > 0) {
+        rateMsg += `🎉 This booking earns you *${newFreeRoomsEarned} FREE room${newFreeRoomsEarned > 1 ? "s" : ""}*!\n\n`;
+      }
+
       rateMsg += `Reply *YES* to confirm or *NO* to cancel\n\n`;
 
       // Add upgrade options based on current room type
@@ -661,7 +702,9 @@ async function confirmAndSave(from, agent, session) {
     const rate = session.rate || 0;
     const extraCharge = (session.extraBedCharge || 0) * nights;
     const roomTotal = rate * rooms * nights;
-    const grandTotal = roomTotal + extraCharge;
+    const freeRoomDiscount = session.freeRoomDiscount || 0;
+    const freeRoomsApplied = session.freeRoomsApplied || 0;
+    const grandTotal = roomTotal + extraCharge - freeRoomDiscount;
     const typeName = pmsRoomType;
 
     // Generate voucher number
@@ -706,6 +749,10 @@ async function confirmAndSave(from, agent, session) {
 
     if (extraCharge > 0) {
       voucherMsg += `Extra: Rs.${Math.round(extraCharge).toLocaleString()}\n`;
+    }
+
+    if (freeRoomsApplied > 0) {
+      voucherMsg += `🎁 Free Room (${freeRoomsApplied} Deluxe CP): -Rs.${Math.round(freeRoomDiscount).toLocaleString()}\n`;
     }
 
     voucherMsg +=
@@ -822,7 +869,34 @@ async function confirmAndSave(from, agent, session) {
       `Plan: ${session.plan}\n` +
       `Total: Rs.${Math.round(grandTotal).toLocaleString()}`;
 
-    await sendReminder(ADMIN_PHONE, adminMsg);
+    // Update financial year tally
+    try {
+      const tallyResult = await updateTally(from, agent.name, rooms);
+      if (session.freeRoomsApplied > 0) {
+        await useFreeRooms(from, agent.name, session.freeRoomsApplied);
+      }
+      // Notify agent about tally
+      const roomsNeededForNext = 10 - (tallyResult.newRooms % 10);
+      let tallyMsg = `📊 *Your FY Booking Tally:*\n`;
+      tallyMsg += `Total rooms booked this year: *${tallyResult.newRooms}*\n`;
+      if (session.freeRoomsApplied > 0) {
+        tallyMsg += `Free rooms used: *${session.freeRoomsApplied}*\n`;
+      }
+      if (tallyResult.newlyEarned > 0) {
+        tallyMsg += `🎁 *${tallyResult.newlyEarned} new FREE room${tallyResult.newlyEarned > 1 ? "s" : ""} earned!*\n`;
+      }
+      if (roomsNeededForNext < 10) {
+        tallyMsg += `Next free room in: *${roomsNeededForNext} more room${roomsNeededForNext > 1 ? "s" : ""}*`;
+      }
+      await sendReminder(from, tallyMsg);
+
+      // Update admin msg with tally
+      const adminTallyNote = `\nFY Tally: ${tallyResult.newRooms} rooms | Free rooms used: ${session.freeRoomsApplied || 0}`;
+      await sendReminder(ADMIN_PHONE, adminMsg + adminTallyNote);
+    } catch(tallyErr) {
+      console.error("Tally update error:", tallyErr.message);
+      await sendReminder(ADMIN_PHONE, adminMsg);
+    }
 
     // ── PAYMENT POLICY ──────────────────────────────────────────
     // If check-in < 15 days away: 50% now + 50% at check-in
