@@ -824,27 +824,74 @@ async function confirmAndSave(from, agent, session) {
 
     await sendReminder(ADMIN_PHONE, adminMsg);
 
-    // Send UPI QR code for advance payment (20%)
+    // ── PAYMENT POLICY ──────────────────────────────────────────
+    // If check-in < 15 days away: 50% now + 50% at check-in
+    // If check-in >= 15 days away: 25% token + 35% (15 days before) + 40% at check-in
     try {
-      const advanceAmount = Math.round(grandTotal * 0.20);
-      const remaining = grandTotal - advanceAmount;
+      const UPI_ID = process.env.UPI_ID || "9816003322@okbizaxis";
+      const today = new Date();
+      today.setHours(0,0,0,0);
+      const ciDate = new Date(session.ciDate);
+      const daysToCheckin = Math.round((ciDate - today) / 86400000);
+      const total = Math.round(grandTotal);
+
+      let firstAmount, paymentSchedule, policyNote;
+
+      if (daysToCheckin < 15) {
+        // Short notice — 50% now, 50% at check-in
+        firstAmount = Math.round(total * 0.50);
+        const atCheckin = total - firstAmount;
+        paymentSchedule = [
+          { label: "50% Advance (Now)", amount: firstAmount, due: "Pay now to confirm" },
+          { label: "50% Balance", amount: atCheckin, due: "At check-in" },
+        ];
+        policyNote =
+          `⚠️ *Check-in is within 15 days*\n` +
+          `50% advance required to confirm booking.\n\n` +
+          `💰 *Payment Schedule:*\n` +
+          `• Pay Now (50%): *Rs.${firstAmount.toLocaleString()}*\n` +
+          `• At Check-in (50%): Rs.${atCheckin.toLocaleString()}`;
+      } else {
+        // Normal — 25% token + 35% (15 days before) + 40% at check-in
+        firstAmount = Math.round(total * 0.25);
+        const secondAmount = Math.round(total * 0.35);
+        const thirdAmount = total - firstAmount - secondAmount;
+        const reminderDate = new Date(ciDate);
+        reminderDate.setDate(reminderDate.getDate() - 15);
+        const reminderStr = reminderDate.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+        paymentSchedule = [
+          { label: "25% Token (Now)", amount: firstAmount, due: "Pay now to confirm" },
+          { label: "35% Second Payment", amount: secondAmount, due: `By ${reminderStr}` },
+          { label: "40% Balance", amount: thirdAmount, due: "At check-in" },
+        ];
+        policyNote =
+          `💰 *Payment Schedule:*\n` +
+          `• Token (25%): *Rs.${firstAmount.toLocaleString()}* — Pay now\n` +
+          `• 2nd Payment (35%): Rs.${secondAmount.toLocaleString()} — By ${reminderStr}\n` +
+          `• Balance (40%): Rs.${thirdAmount.toLocaleString()} — At check-in`;
+      }
+
+      // Store pending payment with full schedule
       pendingPayments[from] = {
         agentName: agent.name,
         agentPhone: from,
-        amount: advanceAmount,
-        total: Math.round(grandTotal),
-        remaining: Math.round(remaining),
+        amount: firstAmount,
+        total,
+        remaining: total - firstAmount,
         voucherNo,
         ciDate: session.ciDate,
         coDate: session.coDate,
         guestName: session.guestName,
+        paymentSchedule,
+        daysToCheckin,
+        paidSoFar: 0,
+        paymentStep: 1, // 1=first, 2=second, 3=final
       };
 
-      const UPI_ID = process.env.UPI_ID || "9816003322@okbizaxis";
-      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${advanceAmount}%26cu=INR%26tn=Advance-${voucherNo}`;
-
+      // Send QR for first payment
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${firstAmount}%26cu=INR%26tn=Advance-${voucherNo}`;
       const axios = require("axios");
-      // Send QR image
+
       await axios.post(
         `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
         {
@@ -855,31 +902,77 @@ async function confirmAndSave(from, agent, session) {
           image: {
             link: qrUrl,
             caption:
-              `💳 *ADVANCE PAYMENT REQUEST*\n\n` +
+              `💳 *PAYMENT REQUEST*\n\n` +
               `Voucher: *${voucherNo}*\n` +
-              `Total Amount: *Rs.${Math.round(grandTotal).toLocaleString()}*\n` +
-              `Advance (20%): *Rs.${advanceAmount.toLocaleString()}*\n` +
-              `Remaining: Rs.${Math.round(remaining).toLocaleString()}\n\n` +
+              `Total Booking: *Rs.${total.toLocaleString()}*\n\n` +
+              policyNote + `\n\n` +
               `UPI ID: *${UPI_ID}*\n\n` +
-              `📸 Please pay Rs.${advanceAmount.toLocaleString()} and send the *payment screenshot* here to confirm your booking.`
+              `📸 Scan QR or pay to UPI ID and send *payment screenshot* to confirm booking.`
           }
         },
         { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
       );
-      console.log("UPI QR sent to agent", from);
+      console.log("Payment QR sent to agent", from, `(${daysToCheckin} days to checkin)`);
 
-      // For guests — also send plain text UPI details via template as fallback
+      // For guests — also send text fallback
       if (agent.category === "Guest") {
         try {
-          // Send UPI details as a second hotel_confirmed template with payment info
           await sendReminder(from,
-            `💳 *ADVANCE PAYMENT*\n\n` +
-            `Amount: *Rs.${advanceAmount.toLocaleString()}* (20% advance)\n` +
-            `UPI ID: *${UPI_ID}*\n` +
-            `Voucher: ${voucherNo}\n\n` +
+            `💳 *PAYMENT REQUEST*\n\n` +
+            `Voucher: ${voucherNo}\n` +
+            `Total: Rs.${total.toLocaleString()}\n\n` +
+            policyNote + `\n\n` +
+            `UPI ID: *${UPI_ID}*\n\n` +
             `Please pay and send screenshot to confirm booking.`
           );
         } catch(e) { console.error("Guest payment text error:", e.message); }
+      }
+
+      // Schedule automatic reminder for 2nd payment (35%) if > 15 days
+      if (daysToCheckin >= 15) {
+        const reminderDate = new Date(ciDate);
+        reminderDate.setDate(reminderDate.getDate() - 15);
+        const msUntilReminder = reminderDate.getTime() - Date.now();
+        if (msUntilReminder > 0) {
+          setTimeout(async () => {
+            try {
+              const p = pendingPayments[from];
+              if (!p || p.paymentStep !== 1) return; // already paid
+              const secondAmt = Math.round(total * 0.35);
+              const qrUrl2 = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${secondAmt}%26cu=INR%26tn=2nd-${voucherNo}`;
+              await axios.post(
+                `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
+                {
+                  messaging_product: "whatsapp",
+                  recipient_type: "individual",
+                  to: from,
+                  type: "image",
+                  image: {
+                    link: qrUrl2,
+                    caption:
+                      `⏰ *2ND PAYMENT REMINDER*\n\n` +
+                      `Voucher: *${voucherNo}*\n` +
+                      `Check-in: *${fmtDate(session.ciDate)}* is in 15 days!\n\n` +
+                      `2nd Payment (35%): *Rs.${secondAmt.toLocaleString()}*\n` +
+                      `UPI ID: *${UPI_ID}*\n\n` +
+                      `📸 Please pay and send screenshot.`
+                  }
+                },
+                { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
+              );
+              // Notify admin too
+              await sendReminder(ADMIN_PHONE,
+                `⏰ *2ND PAYMENT REMINDER SENT*\n` +
+                `Agent: ${agent.name} (${from})\n` +
+                `Voucher: ${voucherNo}\n` +
+                `Amount: Rs.${secondAmt.toLocaleString()} (35%)`
+              );
+              // Update payment step
+              if (pendingPayments[from]) pendingPayments[from].paymentStep = 2;
+            } catch(e) { console.error("2nd payment reminder error:", e.message); }
+          }, msUntilReminder);
+          console.log(`2nd payment reminder scheduled for ${new Date(Date.now() + msUntilReminder).toLocaleDateString()} for ${from}`);
+        }
       }
     } catch(qrErr) {
       console.error("QR send error:", qrErr.message);
@@ -1267,30 +1360,82 @@ async function handleAdminReply(from, text, t) {
       await sendMessage(from, `No pending payment found for ${agentPhone}`);
       return;
     }
-    const remaining = pending.total - (amount || pending.amount);
+
+    const approvedAmount = amount || pending.amount;
+    const paidSoFar = (pending.paidSoFar || 0) + approvedAmount;
+    const remaining = pending.total - paidSoFar;
+    const step = pending.paymentStep || 1;
+    const UPI_ID = process.env.UPI_ID || "9816003322@okbizaxis";
+
     // Notify admin
     await sendMessage(from,
-      `✅ Payment of Rs.${(amount || pending.amount).toLocaleString()} approved for ${pending.agentName} (${agentPhone})\n` +
+      `✅ Payment Step ${step} approved for ${pending.agentName} (${agentPhone})\n` +
+      `Paid: Rs.${approvedAmount.toLocaleString()} | Total Paid: Rs.${paidSoFar.toLocaleString()}\n` +
       `Voucher: ${pending.voucherNo}\nRemaining: Rs.${remaining.toLocaleString()}`
     );
-    // Notify agent
-    await sendReminder(agentPhone,
+
+    // Build next payment message for agent
+    let agentMsg =
       `✅ *PAYMENT CONFIRMED*\n\n` +
       `Voucher: *${pending.voucherNo}*\n` +
-      `Amount Received: *Rs.${(amount || pending.amount).toLocaleString()}*\n` +
+      `Amount Received: *Rs.${approvedAmount.toLocaleString()}*\n` +
+      `Total Paid: Rs.${paidSoFar.toLocaleString()}\n` +
       `Total Booking: Rs.${pending.total.toLocaleString()}\n` +
-      `Remaining Balance: *Rs.${remaining.toLocaleString()}*\n\n` +
-      `Your booking is fully confirmed! 🎉\n` +
-      `Check-in: ${fmtDate(pending.ciDate)}\n` +
-      `Check-out: ${fmtDate(pending.coDate)}\n\n` +
-      `Thank you, ${pending.agentName}! 🙏`
-    );
-    if (remaining > 0) {
-      await sendReminder(agentPhone,
-        `💡 Remaining balance of *Rs.${remaining.toLocaleString()}* to be paid at check-in.`
-      );
+      `Remaining: *Rs.${remaining.toLocaleString()}*\n\n`;
+
+    if (remaining <= 0) {
+      agentMsg += `🎉 All payments complete! Booking fully confirmed.\n`;
+      agentMsg += `Check-in: ${fmtDate(pending.ciDate)}\nCheck-out: ${fmtDate(pending.coDate)}\n\nThank you! 🙏`;
+      await sendReminder(agentPhone, agentMsg);
+      delete pendingPayments[agentPhone];
+    } else {
+      // Determine next payment details
+      const schedule = pending.paymentSchedule || [];
+      const nextStep = schedule[step]; // step is 0-indexed after first payment
+      if (nextStep) {
+        agentMsg += `📅 *Next Payment:*\n${nextStep.label}: Rs.${nextStep.amount.toLocaleString()} — ${nextStep.due}\n\n`;
+        agentMsg += `Check-in: ${fmtDate(pending.ciDate)}\nThank you, ${pending.agentName}! 🙏`;
+        await sendReminder(agentPhone, agentMsg);
+
+        // Send QR for next payment if it's due soon (2nd payment for short-notice bookings)
+        if (pending.daysToCheckin < 15 && step === 1) {
+          // Short notice — send final QR immediately
+          const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${nextStep.amount}%26cu=INR%26tn=Final-${pending.voucherNo}`;
+          const axios = require("axios");
+          await axios.post(
+            `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
+            {
+              messaging_product: "whatsapp",
+              recipient_type: "individual",
+              to: agentPhone,
+              type: "image",
+              image: {
+                link: qrUrl,
+                caption:
+                  `💳 *FINAL PAYMENT — At Check-in*\n\n` +
+                  `Voucher: *${pending.voucherNo}*\n` +
+                  `Amount: *Rs.${nextStep.amount.toLocaleString()}*\n` +
+                  `UPI ID: *${UPI_ID}*\n\n` +
+                  `Please pay at check-in.`
+              }
+            },
+            { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
+          );
+        }
+      } else {
+        agentMsg += `Remaining Rs.${remaining.toLocaleString()} to be paid at check-in.\n\nThank you! 🙏`;
+        await sendReminder(agentPhone, agentMsg);
+      }
+
+      // Update pending payment
+      pendingPayments[agentPhone] = {
+        ...pending,
+        paidSoFar,
+        amount: nextStep?.amount || remaining,
+        remaining,
+        paymentStep: step + 1,
+      };
     }
-    delete pendingPayments[agentPhone];
     return;
   }
 
