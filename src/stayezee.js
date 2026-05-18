@@ -75,4 +75,27 @@ async function saveReservation({ guestName, guestMobile, male, female, kids, pla
   }
 }
 
-module.exports = { checkAvailability, saveReservation };
+async function cancelReservation(reservationId) {
+  console.log('Cancelling reservation in Stayezee:', reservationId);
+  try {
+    const form = new FormData();
+    form.append('reservation_id', String(reservationId));
+    form.append('cancel_reason', 'No payment received - auto cancelled by bot');
+
+    const res = await axios.post(
+      'https://india.stayezeepms.co.in/FO/API/cancelReservation',
+      form,
+      {
+        headers: { 'X-Hotel-ID': HOTEL_ID, ...form.getHeaders() },
+        timeout: 15000,
+      }
+    );
+    console.log('Stayezee cancelReservation response:', JSON.stringify(res.data));
+    return { success: true, data: res.data };
+  } catch (err) {
+    console.error('Stayezee cancelReservation error:', err.response?.data || err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+module.exports = { checkAvailability, saveReservation, cancelReservation };

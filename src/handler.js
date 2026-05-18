@@ -1,9 +1,8 @@
 "use strict";
 const { parseEnquiry } = require("./parser");
 const { getTally, updateTally, useFreeRooms } = require("./agents");
-const { checkAvailability } = require("./stayezee");
+const { checkAvailability, saveReservation, cancelReservation } = require("./stayezee");
 const { getRate, getCustomerRate, CUSTOMER_EXTRAS } = require("./rates");
-const { saveReservation } = require("./stayezee");
 const {
   sendMessage, sendTemplate, sendReminder, sendEnquiryAck,
   sendRoomAvailable, sendNotAvailable, sendConfirmed, sendAskPlan,
@@ -280,6 +279,11 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId }) {
       if (session.timeoutId) {
         clearTimeout(session.timeoutId);
         session.timeoutId = null;
+      }
+      // Clear follow-up reminders
+      if (session.reminderIds) {
+        session.reminderIds.forEach(id => clearTimeout(id));
+        session.reminderIds = [];
       }
 
       // Double check availability before confirming
@@ -619,21 +623,68 @@ async function checkAndRespond(from, agent, session) {
       session.rate = grandTotal / (session.rooms * nights);
       await sendMessage(from, rateMsg);
 
-      // Set 5 minute timeout - release if no reply
+      // ── ENQUIRY FOLLOW-UP REMINDERS ─────────────────────────────
+      // Clear any existing timers
       if (session.timeoutId) clearTimeout(session.timeoutId);
-      session.timeoutId = setTimeout(async () => {
-        if (sessions[from]?.step === "awaiting_confirm") {
-          sessions[from].step = "idle";
-          sessions[from].timeoutId = null;
+      if (session.reminderIds) session.reminderIds.forEach(id => clearTimeout(id));
+      session.reminderIds = [];
+
+      // Build enquiry summary for reminders
+      const enquirySummary =
+        `📅 Check-in:  *${fmtDate(session.ciDate)}*\n` +
+        `📅 Check-out: *${fmtDate(session.coDate)}*\n` +
+        `🛏 Rooms: *${session.rooms} x ${(session.roomType || "deluxe").charAt(0).toUpperCase() + (session.roomType || "deluxe").slice(1)}*\n` +
+        `🍽 Plan: *${session.plan}*\n` +
+        `💰 Rate: *Rs.${Math.round(session.rate || 0).toLocaleString()}/night*`;
+
+      // Reminder schedule: 24hr, 48hr, 72hr, 1 week
+      const reminderSchedule = [
+        { delay: 24 * 60 * 60 * 1000, label: "1st reminder (24hr)" },
+        { delay: 48 * 60 * 60 * 1000, label: "2nd reminder (48hr)" },
+        { delay: 72 * 60 * 60 * 1000, label: "3rd reminder (72hr)" },
+        { delay: 7  * 24 * 60 * 60 * 1000, label: "Final reminder (1 week)" },
+      ];
+
+      reminderSchedule.forEach(({ delay, label }, idx) => {
+        const isFinal = idx === reminderSchedule.length - 1;
+        const timerId = setTimeout(async () => {
           try {
-            await sendMessage(from,
-              `Dear *${agent.name}*,\n\nYour booking hold has been *released* due to no response.\n\n` +
-              `Rooms are now available for other bookings.\n\n` +
-              `Please send a new enquiry if you still need rooms. 🙏`
-            );
-          } catch(e) { console.error("Timeout message error:", e.message); }
-        }
-      }, 5 * 60 * 1000); // 5 minutes
+            if (sessions[from]?.step !== "awaiting_confirm") return; // already confirmed/cancelled
+
+            if (!isFinal) {
+              // Send follow-up reminder
+              await sendMessage(from,
+                `Dear *${agent.name}*,\n\n` +
+                `Following up on your enquiry 🙏\n\n` +
+                enquirySummary + `\n\n` +
+                `Rooms are *still available*!\n` +
+                `Reply *YES* to confirm or *NO* to cancel.`
+              );
+              console.log(`Enquiry reminder sent to ${from}: ${label}`);
+            } else {
+              // Final reminder — auto cancel after 1 week
+              sessions[from].step = "idle";
+              sessions[from].timeoutId = null;
+              sessions[from].reminderIds = [];
+
+              await sendMessage(from,
+                `Dear *${agent.name}*,\n\n` +
+                `Your enquiry has been *auto-cancelled* as we did not receive a response.\n\n` +
+                enquirySummary + `\n\n` +
+                `If you still need rooms, please send a new enquiry. 🙏`
+              );
+
+              await sendReminder(ADMIN_PHONE,
+                `⚠️ *ENQUIRY AUTO-CANCELLED*\n` +
+                `Agent: ${agent.name} (${from})\n` +
+                enquirySummary + `\n\nNo response in 1 week.`
+              );
+              console.log(`Enquiry auto-cancelled for ${from} after 1 week`);
+            }
+          } catch(e) { console.error(`Reminder error (${label}):`, e.message); }
+        }, delay);
+        session.reminderIds.push(timerId);
+      });
 
       await sendReminder(ADMIN_PHONE,
         `OK *Available*\nAgent: ${agent.name} (${from}) [Cat ${agent.category}]\n` +
@@ -696,6 +747,8 @@ async function confirmAndSave(from, agent, session) {
     const confirmNo = stayezeeData?.booking_id || stayezeeData?.confirmation_no || 
                       stayezeeData?.reservation_no || stayezeeData?.id || 
                       stayezeeData?.message || "Generated";
+    // Store stayezee ID for potential cancellation
+    session.stayezeeId = stayezeeData?.booking_id || stayezeeData?.id || stayezeeData?.reservation_no || null;
 
     const nights = session.nights || 1;
     const rooms = session.rooms || 1;
@@ -960,6 +1013,7 @@ async function confirmAndSave(from, agent, session) {
         daysToCheckin,
         paidSoFar: 0,
         paymentStep: 1, // 1=first, 2=second, 3=final
+        stayezeeId: session.stayezeeId || null, // for cancellation
       };
 
       // Send QR for first payment
@@ -987,6 +1041,87 @@ async function confirmAndSave(from, agent, session) {
         { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
       );
       console.log("Payment QR sent to agent", from, `(${daysToCheckin} days to checkin)`);
+
+      // ── PAYMENT FOLLOW-UP REMINDERS ──────────────────────────────
+      // 24hr, 48hr, 72hr reminders + 1 week auto-cancel
+      const paymentReminderSchedule = [
+        { delay: 24 * 60 * 60 * 1000, label: "24hr payment reminder" },
+        { delay: 48 * 60 * 60 * 1000, label: "48hr payment reminder" },
+        { delay: 72 * 60 * 60 * 1000, label: "72hr payment reminder" },
+        { delay: 7 * 24 * 60 * 60 * 1000, label: "1 week auto-cancel" },
+      ];
+
+      paymentReminderSchedule.forEach(({ delay, label }, idx) => {
+        const isFinal = idx === paymentReminderSchedule.length - 1;
+        setTimeout(async () => {
+          try {
+            // Check if payment already received
+            if (!pendingPayments[from] || pendingPayments[from].voucherNo !== voucherNo) return;
+
+            if (!isFinal) {
+              // Send payment reminder with QR
+              const reminderQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${firstAmount}%26cu=INR%26tn=Advance-${voucherNo}`;
+              const axiosLib = require("axios");
+              await axiosLib.post(
+                `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
+                {
+                  messaging_product: "whatsapp",
+                  recipient_type: "individual",
+                  to: from,
+                  type: "image",
+                  image: {
+                    link: reminderQrUrl,
+                    caption:
+                      `⏰ *PAYMENT REMINDER*\n\n` +
+                      `Voucher: *${voucherNo}*\n` +
+                      `Guest: ${session.guestName}\n` +
+                      `Check-in: ${fmtDate(session.ciDate)}\n\n` +
+                      policyNote + `\n\n` +
+                      `UPI ID: *${UPI_ID}*\n\n` +
+                      `📸 Please pay and send screenshot to confirm booking.`
+                  }
+                },
+                { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
+              );
+              console.log(`Payment reminder sent to ${from}: ${label}`);
+            } else {
+              // Auto-cancel booking after 1 week of no payment
+              const stayezeeId = pendingPayments[from]?.stayezeeId;
+              delete pendingPayments[from];
+
+              // Cancel in Stayezee
+              if (stayezeeId) {
+                try {
+                  await cancelReservation(stayezeeId);
+                  console.log(`Stayezee reservation ${stayezeeId} cancelled for ${from}`);
+                } catch(e) { console.error("Stayezee cancel error:", e.message); }
+              }
+
+              // Notify agent
+              await sendReminder(from,
+                `❌ *BOOKING CANCELLED*\n\n` +
+                `Voucher: *${voucherNo}*\n` +
+                `Guest: ${session.guestName}\n` +
+                `Check-in: ${fmtDate(session.ciDate)}\n\n` +
+                `Your booking has been *auto-cancelled* due to non-payment.\n\n` +
+                `Please contact hotel to re-book:\n📞 +91 98160 03322`
+              );
+
+              // Notify admin
+              await sendReminder(ADMIN_PHONE,
+                `❌ *BOOKING AUTO-CANCELLED (No Payment)*\n\n` +
+                `Agent: ${agent.name} (${from})\n` +
+                `Voucher: ${voucherNo}\n` +
+                `Guest: ${session.guestName}\n` +
+                `Check-in: ${fmtDate(session.ciDate)}\n` +
+                `Amount due: Rs.${firstAmount.toLocaleString()}\n\n` +
+                `Booking cancelled after 1 week of no payment.`
+              );
+              console.log(`Booking auto-cancelled for ${from}: ${voucherNo}`);
+            }
+          } catch(e) { console.error(`Payment reminder error (${label}):`, e.message); }
+        }, delay);
+      });
 
       // For guests — also send text fallback
       if (agent.category === "Guest") {
@@ -1261,7 +1396,7 @@ async function handleGuest(from, text, t) {
 
     // Show rate and ask for confirm
     if (session.step === "awaiting_confirm_customer") {
-      const { checkAvailability } = require("./stayezee");
+      const { checkAvailability, saveReservation, cancelReservation } = require("./stayezee");
       const avail = await checkAvailability({ ciDate: session.ciDate, coDate: session.coDate, rooms: session.rooms });
 
       if (!avail.available) {
