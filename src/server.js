@@ -140,3 +140,51 @@ app.post("/send-checkout", async (req, res) => {
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));
+
+// ── AC STATUS REMINDER — every 2 hours ────────────────────────
+const axios = require("axios");
+
+const AC_REMINDER_PHONE = "918627038322";
+const AC_TEMPLATE_NAME = "ac_status_reminder";
+
+async function sendACReminder() {
+  try {
+    const phoneId = process.env.WA_PHONE_NUMBER_ID;
+    const token = process.env.WA_ACCESS_TOKEN;
+    if (!phoneId || !token) {
+      console.log("AC reminder: WA credentials not set");
+      return;
+    }
+
+    const res = await axios.post(
+      `https://graph.facebook.com/v25.0/${phoneId}/messages`,
+      {
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: AC_REMINDER_PHONE,
+        type: "template",
+        template: {
+          name: AC_TEMPLATE_NAME,
+          language: { code: "en" }
+        }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+    console.log(`✓ AC reminder sent to ${AC_REMINDER_PHONE}:`, res.data?.messages?.[0]?.id);
+  } catch (err) {
+    console.error("✗ AC reminder error:", err.response?.data || err.message);
+  }
+}
+
+// Send every 2 hours (7200000 ms)
+setInterval(sendACReminder, 2 * 60 * 60 * 1000);
+
+// Also send once on server start (after 10 seconds)
+setTimeout(sendACReminder, 10000);
+
+console.log("⏰ AC status reminder scheduled every 2 hours to " + AC_REMINDER_PHONE);
