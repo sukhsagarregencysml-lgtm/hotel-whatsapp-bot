@@ -156,26 +156,56 @@ async function sendACReminder() {
       return;
     }
 
-    const res = await axios.post(
-      `https://graph.facebook.com/v25.0/${phoneId}/messages`,
-      {
-        messaging_product: "whatsapp",
-        recipient_type: "individual",
-        to: AC_REMINDER_PHONE,
-        type: "template",
-        template: {
-          name: AC_TEMPLATE_NAME,
-          language: { code: "en" }
+    // Try plain text first (works if they messaged within 24hrs)
+    // Fallback to template if plain text fails
+    let sent = false;
+
+    try {
+      const res = await axios.post(
+        `https://graph.facebook.com/v25.0/${phoneId}/messages`,
+        {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: AC_REMINDER_PHONE,
+          type: "text",
+          text: { body: "Kindly update AC status on group 🙏" }
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json"
+          }
         }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json"
+      );
+      console.log(`✓ AC reminder (text) sent to ${AC_REMINDER_PHONE}:`, res.data?.messages?.[0]?.id);
+      sent = true;
+    } catch(textErr) {
+      console.log("Plain text failed, trying template...", textErr.response?.data?.error?.message);
+    }
+
+    // Fallback to template if plain text failed
+    if (!sent) {
+      const res = await axios.post(
+        `https://graph.facebook.com/v25.0/${phoneId}/messages`,
+        {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: AC_REMINDER_PHONE,
+          type: "template",
+          template: {
+            name: AC_TEMPLATE_NAME,
+            language: { code: "en" }
+          }
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json"
+          }
         }
-      }
-    );
-    console.log(`✓ AC reminder sent to ${AC_REMINDER_PHONE}:`, res.data?.messages?.[0]?.id);
+      );
+      console.log(`✓ AC reminder (template) sent to ${AC_REMINDER_PHONE}:`, res.data?.messages?.[0]?.id);
+    }
   } catch (err) {
     console.error("✗ AC reminder error:", err.response?.data || err.message);
   }
