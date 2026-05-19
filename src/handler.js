@@ -814,7 +814,8 @@ async function confirmAndSave(from, agent, session) {
       `Hotel Sukhsagar Regency\n` +
       `Shimla, Himachal Pradesh\n` +
       `📞 +91 98160 03322\n` +
-      `━━━━━━━━━━━━━━━━━━━━━`;
+      `━━━━━━━━━━━━━━━━━━━━━` +
+      (session.remark ? `\n\n📝 *Remark:* ${session.remark}` : "");
 
     // Guests added by admin — use approved template (works for any number)
     // Agents — send full voucher text
@@ -1668,6 +1669,66 @@ async function handleAdminReply(from, text, t) {
     return;
   }
 
+  // PAY RECEIVED 919XXXXXXXXX 5000 — admin manually records payment
+  if (t.startsWith("PAY RECEIVED") || t.startsWith("PAYMENT RECEIVED") || t.startsWith("PAY REC")) {
+    const parts = text.trim().split(/\s+/);
+    // Find phone number in parts
+    const phoneIdx = parts.findIndex(p => /^91\d{10}$/.test(p.replace(/\D/g,'')));
+    const agentPhone = phoneIdx >= 0 ? parts[phoneIdx].replace(/\D/g,'') : null;
+    // Find amount in parts
+    const amountIdx = parts.findIndex((p, i) => i > 0 && /^\d{3,6}$/.test(p));
+    const amount = amountIdx >= 0 ? parseInt(parts[amountIdx]) : null;
+
+    if (!agentPhone) {
+      await sendMessage(from,
+        `Format: *PAY RECEIVED 919XXXXXXXXX 5000*\n\n` +
+        `Example: PAY RECEIVED 919816003322 5000`
+      );
+      return;
+    }
+
+    const pending = pendingPayments[agentPhone];
+    if (!pending) {
+      // No pending payment — just acknowledge
+      await sendMessage(from,
+        `✅ Payment recorded for ${agentPhone}${amount ? ` — Rs.${amount.toLocaleString()}` : ""}\n\n` +
+        `No pending payment found in system. If this is a new advance, use APPROVE PAY command.`
+      );
+      return;
+    }
+
+    const approvedAmt = amount || pending.amount;
+    const paidSoFar = (pending.paidSoFar || 0) + approvedAmt;
+    const remaining = pending.total - paidSoFar;
+
+    // Update pending payment
+    pendingPayments[agentPhone] = { ...pending, paidSoFar, remaining };
+
+    // Notify admin
+    await sendMessage(from,
+      `✅ Payment recorded:\n` +
+      `Agent: ${pending.agentName} (${agentPhone})\n` +
+      `Voucher: ${pending.voucherNo}\n` +
+      `Amount received: Rs.${approvedAmt.toLocaleString()}\n` +
+      `Total paid: Rs.${paidSoFar.toLocaleString()}\n` +
+      `Remaining: Rs.${Math.max(0,remaining).toLocaleString()}`
+    );
+
+    // Notify agent
+    await sendReminder(agentPhone,
+      `✅ *PAYMENT RECEIVED*\n\n` +
+      `Voucher: *${pending.voucherNo}*\n` +
+      `Amount Received: *Rs.${approvedAmt.toLocaleString()}*\n` +
+      `Total Paid: Rs.${paidSoFar.toLocaleString()}\n` +
+      `Remaining: *Rs.${Math.max(0,remaining).toLocaleString()}*\n\n` +
+      (remaining <= 0 ? `🎉 All payments complete! Booking fully confirmed.` : `💡 Remaining Rs.${remaining.toLocaleString()} due at check-in.`) +
+      `\n\nThank you! 🙏`
+    );
+
+    if (remaining <= 0) delete pendingPayments[agentPhone];
+    return;
+  }
+
   // LIST PAY — show all pending payments
   if (t === "LIST PAY") {
     const keys = Object.keys(pendingPayments);
@@ -1683,67 +1744,110 @@ async function handleAdminReply(from, text, t) {
     return;
   }
 
-  // BOOK 919876543210 Rahul Singh 22july 24july 2 deluxe CP
+  // BOOK command — smart parser handles any format admin types
+  // BOOK 919876543210 Rahul Singh 22july 24july 2dlx CP 4500 REMARK honeymoon couple
   if (t.startsWith("BOOK ")) {
     try {
-      // Parse: BOOK <phone> <name...> <ciDate> <coDate> <rooms> <roomType> <plan>
-      const parts = text.trim().split(/\s+/);
-      // parts[0] = BOOK
-      // parts[1] = phone
-      // Last 3 parts = rooms, roomType, plan (optional)
-      // Middle parts = name + dates
+      const rawText = text.trim();
+      const parts = rawText.split(/\s+/);
 
+      // Extract phone (always 2nd word)
       const guestPhone = parts[1].replace(/\D/g, "");
       const fullPhone = guestPhone.startsWith("91") ? guestPhone : "91" + guestPhone;
 
-      // Detect plan at end
+      // Extract everything after phone
+      const afterPhone = parts.slice(2).join(" ");
+
+      // ── Extract REMARK (everything after REMARK keyword) ──────
+      const remarkMatch = afterPhone.match(/REMARK\s+(.+)$/i);
+      const remark = remarkMatch ? remarkMatch[1].trim() : null;
+      const textNoRemark = remarkMatch ? afterPhone.slice(0, remarkMatch.index).trim() : afterPhone;
+
+      // ── Extract rate (large standalone number > 500 not room count) ──
+      let adminRate = null;
+      const rateMatch = textNoRemark.match(/(\d{4,6})/g);
+      if (rateMatch) {
+        for (const r of rateMatch.reverse()) {
+          const n = parseInt(r);
+          if (n > 500 && n < 100000) { adminRate = n; break; }
+        }
+      }
+
+      // ── Extract plan ──────────────────────────────────────────
       let plan = "CP";
-      let lastIdx = parts.length - 1;
-      if (/^(CP|MAP|MAPAI|EP)$/i.test(parts[lastIdx])) {
-        plan = parts[lastIdx].toUpperCase();
-        lastIdx--;
-      }
+      const planMatch = textNoRemark.match(/(MAPAI|MAP|CPAI|CP|EP)/i);
+      if (planMatch) plan = planMatch[1].toUpperCase();
 
-      // Detect roomType
+      // ── Extract room type + count (handles "2dlx", "2 dlx", "2super" etc) ──
       let roomType = "deluxe";
-      if (/^(deluxe|dlx|superdeluxe|sdlx|honeymoon|honey|hm)$/i.test(parts[lastIdx])) {
-        const rt = parts[lastIdx].toLowerCase();
-        if (rt.includes("super") || rt === "sdlx") roomType = "superdeluxe";
-        else if (rt.includes("honey") || rt === "hm") roomType = "honeymoon";
-        else roomType = "deluxe";
-        lastIdx--;
-      }
-
-      // Detect rooms count
       let rooms = 1;
-      if (/^\d+$/.test(parts[lastIdx]) && parseInt(parts[lastIdx]) <= 20) {
-        rooms = parseInt(parts[lastIdx]);
-        lastIdx--;
+
+      // Combined: "2dlx", "2sdlx", "2honey" etc
+      const combinedRoomRe = /(\d+)\s*(?:super\s*del(?:uxe)?|sdlx?|s\.?dlx|superdeluxe)/i;
+      const honeyRoomRe = /(\d+)\s*(?:honey(?:moon)?|hm|hmoon)/i;
+      const dlxRoomRe = /(\d+)\s*(?:del(?:uxe)?|dlx|delx)/i;
+      const superFirstRe = /(?:super\s*del(?:uxe)?|sdlx?|superdeluxe)\s*(\d+)/i;
+      const honeyFirstRe = /(?:honey(?:moon)?|hm)\s*(\d+)/i;
+      const dlxFirstRe = /(?:del(?:uxe)?|dlx)\s*(\d+)/i;
+      const roomsOnlyRe = /(\d+)\s*r(?:ooms?)?/i;
+
+      if (combinedRoomRe.test(textNoRemark)) {
+        const m = textNoRemark.match(combinedRoomRe);
+        rooms = parseInt(m[1]); roomType = "superdeluxe";
+      } else if (superFirstRe.test(textNoRemark)) {
+        const m = textNoRemark.match(superFirstRe);
+        rooms = parseInt(m[1]); roomType = "superdeluxe";
+      } else if (honeyRoomRe.test(textNoRemark)) {
+        const m = textNoRemark.match(honeyRoomRe);
+        rooms = parseInt(m[1]); roomType = "honeymoon";
+      } else if (honeyFirstRe.test(textNoRemark)) {
+        const m = textNoRemark.match(honeyFirstRe);
+        rooms = parseInt(m[1]); roomType = "honeymoon";
+      } else if (dlxRoomRe.test(textNoRemark)) {
+        const m = textNoRemark.match(dlxRoomRe);
+        rooms = parseInt(m[1]); roomType = "deluxe";
+      } else if (dlxFirstRe.test(textNoRemark)) {
+        const m = textNoRemark.match(dlxFirstRe);
+        rooms = parseInt(m[1]); roomType = "deluxe";
+      } else if (roomsOnlyRe.test(textNoRemark)) {
+        const m = textNoRemark.match(roomsOnlyRe);
+        rooms = parseInt(m[1]);
+        if (/super|sdlx/i.test(textNoRemark)) roomType = "superdeluxe";
+        else if (/honey|hm/i.test(textNoRemark)) roomType = "honeymoon";
+        else roomType = "deluxe";
+      } else {
+        // Check for standalone room type keywords
+        if (/super|sdlx/i.test(textNoRemark)) roomType = "superdeluxe";
+        else if (/honey|hm/i.test(textNoRemark)) roomType = "honeymoon";
+        else roomType = "deluxe";
+        // Check for standalone number <=20 as room count
+        const numMatch = textNoRemark.match(/([1-9]|1\d|20)/);
+        if (numMatch) rooms = parseInt(numMatch[1]);
       }
 
-      // Remaining middle parts after phone = name + dates
-      // Try to extract 2 dates from remaining text
-      const middleText = parts.slice(2, lastIdx + 1).join(" ");
+      // ── Extract dates ─────────────────────────────────────────
       const { parseEnquiry } = require("./parser");
-      const parsed = parseEnquiry(middleText + " " + rooms + " " + roomType + " " + plan);
+      const parsed = parseEnquiry(textNoRemark + " " + rooms + " " + roomType + " " + plan);
 
       if (!parsed || !parsed.ciDate || !parsed.coDate) {
         await sendMessage(from,
-          `❌ Could not parse dates. Format:
-
-` +
-          `*BOOK 919876543210 Rahul Singh 22july 24july 2 deluxe CP*`
+          `❌ Could not parse dates.\n\n` +
+          `Format examples:\n` +
+          `*BOOK 919XXXXXXXXX Rahul 22july 24july 2dlx CP 4500*\n` +
+          `*BOOK 919XXXXXXXXX Rahul 22.07 24.07 2 super MAP*\n` +
+          `*BOOK 919XXXXXXXXX Rahul 22july 24july 2honey CP REMARK anniversary*`
         );
         return;
       }
 
-      // Extract guest name (parts between phone and first date)
-      // Find where dates start in middleText
+      // ── Extract guest name ────────────────────────────────────
       const dateRe = /\d{1,2}[\.\-\/]\d{1,2}|\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
-      const dateMatch = middleText.search(dateRe);
-      const guestName = dateMatch > 0 ? middleText.slice(0, dateMatch).trim() : "Guest";
+      const dateMatch = textNoRemark.search(dateRe);
+      let guestName = dateMatch > 0 ? textNoRemark.slice(0, dateMatch).trim() : "Guest";
+      // Remove plan/room type keywords from name
+      guestName = guestName.replace(/(CP|MAP|MAPAI|EP|deluxe|dlx|super|sdlx|honey|hm|\d+)/gi, '').trim() || "Guest";
 
-      // Check if number exists in agents, if not auto-add as Guest category
+      // ── Auto-add as Guest if not in list ──────────────────────
       const { getAgent, addAgent } = require("./agents");
       let agent = await getAgent(fullPhone);
       if (!agent) {
@@ -1752,22 +1856,15 @@ async function handleAdminReply(from, text, t) {
         await sendMessage(from, `📋 *${guestName}* (${fullPhone}) auto-added as Guest`);
       }
 
-      // Detect admin custom rate — last part if > 500
-      let adminRate = null;
-      const lastPart = parts[parts.length - 1];
-      if (/^\d+$/.test(lastPart) && parseInt(lastPart) > 500 && parseInt(lastPart) !== rooms) {
-        adminRate = parseInt(lastPart);
-      }
-
-      // Get rate — use admin rate if provided, else standard
+      // ── Get rate ──────────────────────────────────────────────
       let finalRate;
       if (adminRate) {
         finalRate = adminRate;
       } else {
-        const { getRate, getCustomerRate, CUSTOMER_EXTRAS } = require("./rates");
+        const { getRate } = require("./rates");
         const rateInfo = getRate(roomType, plan, parsed.ciDate, agent.category === "Guest" ? "C" : agent.category);
         if (!rateInfo) {
-          await sendMessage(from, `❌ Could not find rate for ${roomType} ${plan}. Add rate at end:\n*BOOK ... 4500*`);
+          await sendMessage(from, `❌ Rate not found for ${roomType} ${plan}.\nAdd rate: *BOOK ... 4500*`);
           return;
         }
         finalRate = rateInfo.rate;
@@ -1777,7 +1874,6 @@ async function handleAdminReply(from, text, t) {
       const grandTotal = finalRate * rooms * nights;
       const advanceAmount = Math.round(grandTotal * 0.20);
 
-      // Build a fake session and call confirmAndSave
       const fakeSession = {
         ciDate: parsed.ciDate,
         coDate: parsed.coDate,
@@ -1793,14 +1889,18 @@ async function handleAdminReply(from, text, t) {
         extraBed: 0,
         extraBedCharge: 0,
         extraBedType: null,
+        remark,
       };
+
+      const remarkText = remark ? `\nRemark: _${remark}_` : "";
 
       await sendMessage(from,
         `⏳ Creating booking for *${guestName}*...\n` +
         `${fmtDate(parsed.ciDate)} → ${fmtDate(parsed.coDate)}\n` +
         `${rooms} x ${roomType} | ${plan}\n` +
         `Rate: Rs.${finalRate.toLocaleString()}/night${adminRate ? " (admin rate)" : ""}\n` +
-        `Total: Rs.${Math.round(grandTotal).toLocaleString()}`
+        `Total: Rs.${Math.round(grandTotal).toLocaleString()}` +
+        remarkText
       );
 
       await confirmAndSave(fullPhone, agent, fakeSession);
@@ -1814,7 +1914,8 @@ async function handleAdminReply(from, text, t) {
         `Plan: ${plan}\n` +
         `Rate: Rs.${finalRate.toLocaleString()}/night${adminRate ? " (admin rate)" : ""}\n` +
         `Total: Rs.${Math.round(grandTotal).toLocaleString()}\n` +
-        `Advance (20%): Rs.${advanceAmount.toLocaleString()}\n\n` +
+        `Advance (20%): Rs.${advanceAmount.toLocaleString()}` +
+        remarkText + `\n\n` +
         `Voucher + QR sent to ${fullPhone} ✅`
       );
     } catch(err) {
@@ -1826,7 +1927,11 @@ async function handleAdminReply(from, text, t) {
 
   await sendMessage(from,
     `*Admin Commands:*\n\n` +
-    `BOOK 91XXXXXXXXXX Name 22july 24july 2 deluxe CP\n` +
+    `*Booking:*\n` +
+    `BOOK 91XXXXXXXXXX Name 22july 24july 2dlx CP 4500\n` +
+    `BOOK 91XXXXXXXXXX Name 22.07 24.07 2super MAP REMARK anniversary\n\n` +
+    `*Payment:*\n` +
+    `PAY RECEIVED 91XXXXXXXXXX 5000\n` +
     `APPROVE PAY 91XXXXXXXXXX 5000\n` +
     `REJECT PAY 91XXXXXXXXXX\n` +
     `LIST PAY\n` +
