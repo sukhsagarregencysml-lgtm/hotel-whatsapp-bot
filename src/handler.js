@@ -117,14 +117,32 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId }) {
   // -- CHECK IF REGISTERED AGENT ------------------------------------------
   const agent = await getAgent(from);
   if (!agent || agent.category === "Guest") {
-    // Guests added by admin should not get agent booking flow
-    // Handle payment screenshot from guests
-    if (agent && agent.category === "Guest") {
-      // Only handle payment screenshot — rest goes to guest flow
-      if (sessions[from]?.step && sessions[from].step !== "idle") {
-        // clear any accidental agent session
-        sessions[from] = { step: "idle" };
+    // For guests — check payment screenshot BEFORE routing to guest flow
+    if (msgType === "image" && agent && agent.category === "Guest") {
+      const pending = pendingPayments[from];
+      if (pending) {
+        await sendMessage(from,
+          `✅ *Screenshot received!*\n\n` +
+          `Voucher: *${pending.voucherNo}*\n` +
+          `Amount: Rs.${pending.amount.toLocaleString()}\n\n` +
+          `Pending admin approval. You will be notified once confirmed. 🙏`
+        );
+        await sendReminder(ADMIN_PHONE,
+          `📸 *PAYMENT SCREENSHOT RECEIVED*\n\n` +
+          `Guest: ${pending.agentName} (${from})\n` +
+          `Voucher: ${pending.voucherNo}\n` +
+          `Amount: Rs.${pending.amount.toLocaleString()}\n` +
+          `Guest Name: ${pending.guestName}\n` +
+          `Check-in: ${fmtDate(pending.ciDate)}\n\n` +
+          `To approve: *APPROVE PAY ${from} ${pending.amount}*\n` +
+          `To reject: *REJECT PAY ${from}*`
+        );
+        return;
       }
+    }
+    // Clear any accidental agent session for guests
+    if (agent && agent.category === "Guest" && sessions[from]?.step && sessions[from].step !== "idle") {
+      sessions[from] = { step: "idle" };
     }
     await handleGuest(from, text, t);
     return;
@@ -169,15 +187,31 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId }) {
   }
 
   // Step: awaiting extra bed
+  // Accepts: 1/CWB/EXTRA PERSON, 2/CNB/CHILD NO BED, 3/FREE/CHILD UNDER 5, NO/4
   if (session.step === "awaiting_extra_bed") {
-    if (t === "1") {
+    const isCWB = ["1","CWB","EXTRA","EXTRA PERSON","EXTRA BED","MATTRESS","EB"].includes(t);
+    const isCNB = ["2","CNB","CHILD NO BED","CNB ABOVE","CHILD","NO BED"].includes(t) || t.startsWith("CNB");
+    const isFree = ["3","FREE","CHILD FREE","CHILD UNDER 5","UNDER 5","BABY","0"].includes(t);
+    const isNo = ["4","NO","NONE","N","NO EXTRA","NOT NEEDED"].includes(t);
+
+    if (isCWB) {
       session.extraBed = 1; session.extraBedCharge = getExtraPersonCharge(session.plan); session.extraBedType = "Extra person (above 10 yrs) with mattress";
-    } else if (t === "2") {
+    } else if (isCNB) {
       session.extraBed = 1; session.extraBedCharge = getChildNoBedCharge(session.plan); session.extraBedType = "Child no bed (6 to 10 yrs)";
-    } else if (t === "3") {
+    } else if (isFree) {
       session.extraBed = 1; session.extraBedCharge = 0; session.extraBedType = "Child (under 5 yrs)";
-    } else {
+    } else if (isNo) {
       session.extraBed = 0; session.extraBedCharge = 0; session.extraBedType = null;
+    } else {
+      // Not recognized — ask again
+      await sendMessage(from,
+        `Please reply with:\n\n` +
+        `*1* or *CWB* - Extra person with mattress\n` +
+        `*2* or *CNB* - Child no bed (6-10 yrs)\n` +
+        `*3* or *FREE* - Child under 5 yrs (free)\n` +
+        `*4* or *NO* - No extra bed`
+      );
+      return;
     }
     session.step = "idle";
     await confirmAndSave(from, agent, session);
@@ -1138,51 +1172,17 @@ async function confirmAndSave(from, agent, session) {
         } catch(e) { console.error("Guest payment text error:", e.message); }
       }
 
-      // Schedule automatic reminder for 2nd payment (35%) if > 15 days
+      // Store reminder date in pendingPayments — checked daily by cron
+      // We store the date instead of using setTimeout (which resets on server restart)
       if (daysToCheckin >= 15) {
         const reminderDate = new Date(ciDate);
         reminderDate.setDate(reminderDate.getDate() - 15);
-        const msUntilReminder = reminderDate.getTime() - Date.now();
-        if (msUntilReminder > 0) {
-          setTimeout(async () => {
-            try {
-              const p = pendingPayments[from];
-              if (!p || p.paymentStep !== 1) return; // already paid
-              const secondAmt = Math.round(total * 0.35);
-              const qrUrl2 = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${secondAmt}%26cu=INR%26tn=2nd-${voucherNo}`;
-              await axios.post(
-                `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
-                {
-                  messaging_product: "whatsapp",
-                  recipient_type: "individual",
-                  to: from,
-                  type: "image",
-                  image: {
-                    link: qrUrl2,
-                    caption:
-                      `⏰ *2ND PAYMENT REMINDER*\n\n` +
-                      `Voucher: *${voucherNo}*\n` +
-                      `Check-in: *${fmtDate(session.ciDate)}* is in 15 days!\n\n` +
-                      `2nd Payment (35%): *Rs.${secondAmt.toLocaleString()}*\n` +
-                      `UPI ID: *${UPI_ID}*\n\n` +
-                      `📸 Please pay and send screenshot.`
-                  }
-                },
-                { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
-              );
-              // Notify admin too
-              await sendReminder(ADMIN_PHONE,
-                `⏰ *2ND PAYMENT REMINDER SENT*\n` +
-                `Agent: ${agent.name} (${from})\n` +
-                `Voucher: ${voucherNo}\n` +
-                `Amount: Rs.${secondAmt.toLocaleString()} (35%)`
-              );
-              // Update payment step
-              if (pendingPayments[from]) pendingPayments[from].paymentStep = 2;
-            } catch(e) { console.error("2nd payment reminder error:", e.message); }
-          }, msUntilReminder);
-          console.log(`2nd payment reminder scheduled for ${new Date(Date.now() + msUntilReminder).toLocaleDateString()} for ${from}`);
+        // Store reminder date on pendingPayments for daily cron check
+        if (pendingPayments[from]) {
+          pendingPayments[from].secondPaymentReminderDate = reminderDate.toISOString().split("T")[0];
+          pendingPayments[from].secondPaymentAmount = Math.round(total * 0.35);
         }
+        console.log(`2nd payment reminder set for ${reminderDate.toLocaleDateString()} for ${from}`);
       }
     } catch(qrErr) {
       console.error("QR send error:", qrErr.message);
@@ -1607,29 +1607,11 @@ async function handleAdminReply(from, text, t) {
         agentMsg += `Check-in: ${fmtDate(pending.ciDate)}\nThank you, ${pending.agentName}! 🙏`;
         await sendReminder(agentPhone, agentMsg);
 
-        // Send QR for next payment if it's due soon (2nd payment for short-notice bookings)
+        // Short notice bookings — just remind about balance, no extra QR
         if (pending.daysToCheckin < 15 && step === 1) {
-          // Short notice — send final QR immediately
-          const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${nextStep.amount}%26cu=INR%26tn=Final-${pending.voucherNo}`;
-          const axios = require("axios");
-          await axios.post(
-            `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
-            {
-              messaging_product: "whatsapp",
-              recipient_type: "individual",
-              to: agentPhone,
-              type: "image",
-              image: {
-                link: qrUrl,
-                caption:
-                  `💳 *FINAL PAYMENT — At Check-in*\n\n` +
-                  `Voucher: *${pending.voucherNo}*\n` +
-                  `Amount: *Rs.${nextStep.amount.toLocaleString()}*\n` +
-                  `UPI ID: *${UPI_ID}*\n\n` +
-                  `Please pay at check-in.`
-              }
-            },
-            { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
+          await sendReminder(agentPhone,
+            `💡 *Remaining Balance: Rs.${nextStep.amount.toLocaleString()}*\n` +
+            `Please pay at check-in.\nVoucher: ${pending.voucherNo}`
           );
         }
       } else {
@@ -1746,14 +1728,7 @@ async function handleAdminReply(from, text, t) {
 
   // BOOK command — smart parser handles any format admin types
   // BOOK 919876543210 Rahul Singh 22july 24july 2dlx CP 4500 REMARK honeymoon couple
-  // BOOK = agent rates, BOOK1 = customer rates, BOOK2 = agent rates
-  const isBook1 = t.startsWith("BOOK1 ");
-  const isBook2 = t.startsWith("BOOK2 ");
-  const isBook = t.startsWith("BOOK ") || isBook1 || isBook2;
-  if (isBook) {
-    // Normalize text — replace BOOK1/BOOK2 with BOOK for parser
-    text = text.replace(/^BOOK[12]\s/i, "BOOK ");
-    const t2 = text.trim().toUpperCase();
+  if (t.startsWith("BOOK ")) {
     try {
       const rawText = text.trim();
       const parts = rawText.split(/\s+/);
@@ -1864,21 +1839,9 @@ async function handleAdminReply(from, text, t) {
       }
 
       // ── Get rate ──────────────────────────────────────────────
-      // BOOK1 = customer (brochure) rates, BOOK/BOOK2 = agent rates
       let finalRate;
-      let rateTypeLabel = "";
       if (adminRate) {
         finalRate = adminRate;
-        rateTypeLabel = "(admin rate)";
-      } else if (isBook1) {
-        const { getCustomerRate } = require("./rates");
-        const rateInfo = getCustomerRate(roomType, plan, parsed.ciDate);
-        if (!rateInfo) {
-          await sendMessage(from, `❌ Rate not found for ${roomType} ${plan}.`);
-          return;
-        }
-        finalRate = rateInfo.rate;
-        rateTypeLabel = "(customer rate)";
       } else {
         const { getRate } = require("./rates");
         const rateInfo = getRate(roomType, plan, parsed.ciDate, agent.category === "Guest" ? "C" : agent.category);
@@ -1887,7 +1850,6 @@ async function handleAdminReply(from, text, t) {
           return;
         }
         finalRate = rateInfo.rate;
-        rateTypeLabel = "(agent rate)";
       }
 
       const nights = Math.max(1, Math.round((new Date(parsed.coDate) - new Date(parsed.ciDate)) / 86400000));
@@ -1918,7 +1880,7 @@ async function handleAdminReply(from, text, t) {
         `⏳ Creating booking for *${guestName}*...\n` +
         `${fmtDate(parsed.ciDate)} → ${fmtDate(parsed.coDate)}\n` +
         `${rooms} x ${roomType} | ${plan}\n` +
-        `Rate: Rs.${finalRate.toLocaleString()}/night ${rateTypeLabel}\n` +
+        `Rate: Rs.${finalRate.toLocaleString()}/night${adminRate ? " (admin rate)" : ""}\n` +
         `Total: Rs.${Math.round(grandTotal).toLocaleString()}` +
         remarkText
       );
@@ -1932,7 +1894,7 @@ async function handleAdminReply(from, text, t) {
         `Check-out: ${fmtDate(parsed.coDate)}\n` +
         `Rooms: ${rooms} x ${roomType}\n` +
         `Plan: ${plan}\n` +
-        `Rate: Rs.${finalRate.toLocaleString()}/night ${rateTypeLabel}\n` +
+        `Rate: Rs.${finalRate.toLocaleString()}/night${adminRate ? " (admin rate)" : ""}\n` +
         `Total: Rs.${Math.round(grandTotal).toLocaleString()}\n` +
         `Advance (20%): Rs.${advanceAmount.toLocaleString()}` +
         remarkText + `\n\n` +
@@ -1948,11 +1910,8 @@ async function handleAdminReply(from, text, t) {
   await sendMessage(from,
     `*Admin Commands:*\n\n` +
     `*Booking:*\n` +
-    `BOOK1 91XXXXXXXXXX Name 22july 24july 2dlx CP → Customer rates\n` +
-    `BOOK2 91XXXXXXXXXX Name 22july 24july 2dlx CP → Agent rates\n` +
-    `BOOK 91XXXXXXXXXX Name 22july 24july 2dlx CP → Agent rates\n` +
-    `Add rate at end: BOOK1 ... 4500\n` +
-    `Add remark: BOOK1 ... REMARK honeymoon couple\n\n` +
+    `BOOK 91XXXXXXXXXX Name 22july 24july 2dlx CP 4500\n` +
+    `BOOK 91XXXXXXXXXX Name 22.07 24.07 2super MAP REMARK anniversary\n\n` +
     `*Payment:*\n` +
     `PAY RECEIVED 91XXXXXXXXXX 5000\n` +
     `APPROVE PAY 91XXXXXXXXXX 5000\n` +

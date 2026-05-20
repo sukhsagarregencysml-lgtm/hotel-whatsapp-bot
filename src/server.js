@@ -141,6 +141,74 @@ app.post("/send-checkout", async (req, res) => {
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));
 
+// ── DAILY PAYMENT REMINDER CHECK — every day at 9 AM ─────────
+const cron = require("node-cron");
+
+cron.schedule("0 9 * * *", async () => {
+  try {
+    const { pendingPayments } = require("./handler");
+    const axios = require("axios");
+    const today = new Date().toISOString().split("T")[0];
+    const UPI_ID = process.env.UPI_ID || "9816003322@okbizaxis";
+
+    for (const [phone, pending] of Object.entries(pendingPayments)) {
+      // Check if 2nd payment reminder is due today
+      if (
+        pending.secondPaymentReminderDate &&
+        pending.secondPaymentReminderDate <= today &&
+        pending.paymentStep === 1
+      ) {
+        try {
+          const secondAmt = pending.secondPaymentAmount || Math.round((pending.total || 0) * 0.35);
+          const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${secondAmt}%26cu=INR%26tn=2nd-${pending.voucherNo}`;
+
+          await axios.post(
+            `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
+            {
+              messaging_product: "whatsapp",
+              recipient_type: "individual",
+              to: phone,
+              type: "image",
+              image: {
+                link: qrUrl,
+                caption:
+                  `⏰ *2ND PAYMENT DUE*\n\n` +
+                  `Voucher: *${pending.voucherNo}*\n` +
+                  `Guest: ${pending.guestName}\n` +
+                  `Check-in: *${pending.ciDate}* is in 15 days!\n\n` +
+                  `2nd Payment (35%): *Rs.${secondAmt.toLocaleString()}*\n` +
+                  `UPI ID: *${UPI_ID}*\n\n` +
+                  `📸 Please pay and send screenshot.`
+              }
+            },
+            { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
+          );
+
+          // Notify admin
+          const { sendReminder } = require("./whatsapp");
+          await sendReminder(process.env.ADMIN_PHONE || "919816003322",
+            `⏰ *2ND PAYMENT REMINDER SENT*\n` +
+            `Agent: ${pending.agentName} (${phone})\n` +
+            `Voucher: ${pending.voucherNo}\n` +
+            `Amount: Rs.${secondAmt.toLocaleString()} (35%)`
+          );
+
+          // Update payment step
+          pendingPayments[phone].paymentStep = 2;
+          delete pendingPayments[phone].secondPaymentReminderDate;
+          console.log(`✓ 2nd payment reminder sent to ${phone} for voucher ${pending.voucherNo}`);
+        } catch(e) {
+          console.error(`✗ 2nd payment reminder error for ${phone}:`, e.message);
+        }
+      }
+    }
+  } catch(e) {
+    console.error("Daily payment cron error:", e.message);
+  }
+}, { timezone: "Asia/Kolkata" });
+
+console.log("⏰ Daily payment reminder cron scheduled at 9 AM IST");
+
 // ── AC STATUS REMINDER — every 2 hours ────────────────────────
 const axios = require("axios");
 
