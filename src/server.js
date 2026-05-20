@@ -160,7 +160,8 @@ cron.schedule("0 9 * * *", async () => {
       ) {
         try {
           const secondAmt = pending.secondPaymentAmount || Math.round((pending.total || 0) * 0.35);
-          const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${secondAmt}%26cu=INR%26tn=2nd-${pending.voucherNo}`;
+          const upiLink2 = `upi://pay?pa=${UPI_ID}&pn=Hotel%20Sukhsagar%20Regency&am=${secondAmt}&cu=INR&tn=2nd-${pending.voucherNo}`;
+          const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=1000x1000&ecc=H&margin=2&data=${encodeURIComponent(upiLink2)}`;
 
           await axios.post(
             `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,

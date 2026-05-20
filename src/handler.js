@@ -1051,8 +1051,9 @@ async function confirmAndSave(from, agent, session) {
         stayezeeId: session.stayezeeId || null, // for cancellation
       };
 
-      // Send QR for first payment
-      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${firstAmount}%26cu=INR%26tn=Advance-${voucherNo}`;
+      // Send QR for first payment — high resolution for gallery scanning
+      const upiLink = `upi://pay?pa=${UPI_ID}&pn=Hotel%20Sukhsagar%20Regency&am=${firstAmount}&cu=INR&tn=Advance-${voucherNo}`;
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=1000x1000&ecc=H&margin=2&data=${encodeURIComponent(upiLink)}`;
       const axios = require("axios");
 
       await axios.post(
@@ -1069,11 +1070,25 @@ async function confirmAndSave(from, agent, session) {
               `Voucher: *${voucherNo}*\n` +
               `Total Booking: *Rs.${total.toLocaleString()}*\n\n` +
               policyNote + `\n\n` +
-              `UPI ID: *${UPI_ID}*\n\n` +
-              `📸 Scan QR or pay to UPI ID and send *payment screenshot* to confirm booking.`
+              `UPI ID: *${UPI_ID}*\n` +
+              `Amount: *Rs.${firstAmount.toLocaleString()}*\n\n` +
+              `📱 *To pay on mobile:*\n` +
+              `Open GPay/PhonePe → Scan QR\n` +
+              `Or pay directly to UPI ID: *${UPI_ID}*\n\n` +
+              `📸 After payment send screenshot here to confirm booking.`
           }
         },
         { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
+      );
+
+      // Also send clickable UPI payment link as separate text message
+      await sendMessage(from,
+        `💡 *Quick Pay Link:*\n` +
+        `If QR doesn\'t scan, pay directly:\n\n` +
+        `UPI ID: *${UPI_ID}*\n` +
+        `Amount: *Rs.${firstAmount.toLocaleString()}*\n` +
+        `Reference: ${voucherNo}\n\n` +
+        `Open GPay/PhonePe → Send Money → Enter UPI ID above`
       );
       console.log("Payment QR sent to agent", from, `(${daysToCheckin} days to checkin)`);
 
@@ -1095,7 +1110,8 @@ async function confirmAndSave(from, agent, session) {
 
             if (!isFinal) {
               // Send payment reminder with QR
-              const reminderQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${firstAmount}%26cu=INR%26tn=Advance-${voucherNo}`;
+              const reminderUpiLink = `upi://pay?pa=${UPI_ID}&pn=Hotel%20Sukhsagar%20Regency&am=${firstAmount}&cu=INR&tn=Advance-${pending.voucherNo || voucherNo}`;
+              const reminderQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=1000x1000&ecc=H&margin=2&data=${encodeURIComponent(reminderUpiLink)}`;
               const axiosLib = require("axios");
               await axiosLib.post(
                 `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
