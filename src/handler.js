@@ -1746,7 +1746,14 @@ async function handleAdminReply(from, text, t) {
 
   // BOOK command — smart parser handles any format admin types
   // BOOK 919876543210 Rahul Singh 22july 24july 2dlx CP 4500 REMARK honeymoon couple
-  if (t.startsWith("BOOK ")) {
+  // BOOK = agent rates, BOOK1 = customer rates, BOOK2 = agent rates
+  const isBook1 = t.startsWith("BOOK1 ");
+  const isBook2 = t.startsWith("BOOK2 ");
+  const isBook = t.startsWith("BOOK ") || isBook1 || isBook2;
+  if (isBook) {
+    // Normalize text — replace BOOK1/BOOK2 with BOOK for parser
+    text = text.replace(/^BOOK[12]\s/i, "BOOK ");
+    const t2 = text.trim().toUpperCase();
     try {
       const rawText = text.trim();
       const parts = rawText.split(/\s+/);
@@ -1857,9 +1864,21 @@ async function handleAdminReply(from, text, t) {
       }
 
       // ── Get rate ──────────────────────────────────────────────
+      // BOOK1 = customer (brochure) rates, BOOK/BOOK2 = agent rates
       let finalRate;
+      let rateTypeLabel = "";
       if (adminRate) {
         finalRate = adminRate;
+        rateTypeLabel = "(admin rate)";
+      } else if (isBook1) {
+        const { getCustomerRate } = require("./rates");
+        const rateInfo = getCustomerRate(roomType, plan, parsed.ciDate);
+        if (!rateInfo) {
+          await sendMessage(from, `❌ Rate not found for ${roomType} ${plan}.`);
+          return;
+        }
+        finalRate = rateInfo.rate;
+        rateTypeLabel = "(customer rate)";
       } else {
         const { getRate } = require("./rates");
         const rateInfo = getRate(roomType, plan, parsed.ciDate, agent.category === "Guest" ? "C" : agent.category);
@@ -1868,6 +1887,7 @@ async function handleAdminReply(from, text, t) {
           return;
         }
         finalRate = rateInfo.rate;
+        rateTypeLabel = "(agent rate)";
       }
 
       const nights = Math.max(1, Math.round((new Date(parsed.coDate) - new Date(parsed.ciDate)) / 86400000));
@@ -1898,7 +1918,7 @@ async function handleAdminReply(from, text, t) {
         `⏳ Creating booking for *${guestName}*...\n` +
         `${fmtDate(parsed.ciDate)} → ${fmtDate(parsed.coDate)}\n` +
         `${rooms} x ${roomType} | ${plan}\n` +
-        `Rate: Rs.${finalRate.toLocaleString()}/night${adminRate ? " (admin rate)" : ""}\n` +
+        `Rate: Rs.${finalRate.toLocaleString()}/night ${rateTypeLabel}\n` +
         `Total: Rs.${Math.round(grandTotal).toLocaleString()}` +
         remarkText
       );
@@ -1912,7 +1932,7 @@ async function handleAdminReply(from, text, t) {
         `Check-out: ${fmtDate(parsed.coDate)}\n` +
         `Rooms: ${rooms} x ${roomType}\n` +
         `Plan: ${plan}\n` +
-        `Rate: Rs.${finalRate.toLocaleString()}/night${adminRate ? " (admin rate)" : ""}\n` +
+        `Rate: Rs.${finalRate.toLocaleString()}/night ${rateTypeLabel}\n` +
         `Total: Rs.${Math.round(grandTotal).toLocaleString()}\n` +
         `Advance (20%): Rs.${advanceAmount.toLocaleString()}` +
         remarkText + `\n\n` +
@@ -1928,8 +1948,11 @@ async function handleAdminReply(from, text, t) {
   await sendMessage(from,
     `*Admin Commands:*\n\n` +
     `*Booking:*\n` +
-    `BOOK 91XXXXXXXXXX Name 22july 24july 2dlx CP 4500\n` +
-    `BOOK 91XXXXXXXXXX Name 22.07 24.07 2super MAP REMARK anniversary\n\n` +
+    `BOOK1 91XXXXXXXXXX Name 22july 24july 2dlx CP → Customer rates\n` +
+    `BOOK2 91XXXXXXXXXX Name 22july 24july 2dlx CP → Agent rates\n` +
+    `BOOK 91XXXXXXXXXX Name 22july 24july 2dlx CP → Agent rates\n` +
+    `Add rate at end: BOOK1 ... 4500\n` +
+    `Add remark: BOOK1 ... REMARK honeymoon couple\n\n` +
     `*Payment:*\n` +
     `PAY RECEIVED 91XXXXXXXXXX 5000\n` +
     `APPROVE PAY 91XXXXXXXXXX 5000\n` +
