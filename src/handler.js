@@ -1725,7 +1725,21 @@ async function handleGuest(from, text, t) {
 
 async function handleAdminReply(from, text, t) {
   // APPROVE PAY 919XXXXXXXXX 5000
-  if (t.startsWith("APPROVE PAY")) {
+  // Also handle Y/YES/N/NO as quick response to last pending action
+  if (["Y","YES"].includes(t) && Object.keys(pendingCancellations).length > 0) {
+    // Auto approve latest cancellation
+    const latestKey = Object.keys(pendingCancellations).pop();
+    text = `APPROVE CANCEL ${latestKey}`;
+    t = text.toUpperCase();
+  }
+  if (["N","NO"].includes(t) && Object.keys(pendingCancellations).length > 0) {
+    const latestKey = Object.keys(pendingCancellations).pop();
+    text = `REJECT CANCEL ${latestKey}`;
+    t = text.toUpperCase();
+  }
+
+  // Flexible: "APPROVE 919..." or "APPROVE PAY 919..."
+  if (t.startsWith("APPROVE PAY") || (t.startsWith("APPROVE ") && /91\d{10}/.test(t))) {
     const parts = text.trim().split(/\s+/);
     const agentPhone = parts[2];
     const amount = parseInt(parts[3]);
@@ -1823,8 +1837,8 @@ async function handleAdminReply(from, text, t) {
     return;
   }
 
-  // REJECT PAY 919XXXXXXXXX
-  if (t.startsWith("REJECT PAY")) {
+  // REJECT PAY 919XXXXXXXXX — also "REJECT 919..."
+  if (t.startsWith("REJECT PAY") || (t.startsWith("REJECT ") && /91\d{10}/.test(t) && !t.startsWith("REJECT CANCEL"))) {
     const parts = text.trim().split(/\s+/);
     const agentPhone = parts[2];
     const pending = pendingPayments[agentPhone];
@@ -1903,9 +1917,10 @@ async function handleAdminReply(from, text, t) {
     return;
   }
 
-  // APPROVE CANCEL <voucherNo>
-  if (t.startsWith("APPROVE CANCEL")) {
-    const voucherNo = text.trim().split(/\s+/)[2];
+  // APPROVE CANCEL <voucherNo> — also "APPROVE SR-001" or "YES CANCEL SR-001"
+  if (t.startsWith("APPROVE CANCEL") || t.startsWith("YES CANCEL") || t.startsWith("OK CANCEL")) {
+    const parts = text.trim().split(/\s+/);
+    const voucherNo = parts[parts.length - 1]; // Always last word
     const cancel = pendingCancellations[voucherNo];
     if (!cancel) {
       await sendMessage(from, `No pending cancellation found for ${voucherNo}`);
@@ -1947,9 +1962,10 @@ async function handleAdminReply(from, text, t) {
     return;
   }
 
-  // REJECT CANCEL <voucherNo>
-  if (t.startsWith("REJECT CANCEL")) {
-    const voucherNo = text.trim().split(/\s+/)[2];
+  // REJECT CANCEL <voucherNo> — also "NO CANCEL SR-001"
+  if (t.startsWith("REJECT CANCEL") || t.startsWith("NO CANCEL")) {
+    const parts = text.trim().split(/\s+/);
+    const voucherNo = parts[parts.length - 1];
     const cancel = pendingCancellations[voucherNo];
     if (!cancel) {
       await sendMessage(from, `No pending cancellation found for ${voucherNo}`);
@@ -2016,13 +2032,18 @@ async function handleAdminReply(from, text, t) {
       const remark = remarkMatch ? remarkMatch[1].trim() : null;
       const textNoRemark = remarkMatch ? afterPhone.slice(0, remarkMatch.index).trim() : afterPhone;
 
-      // ── Extract rate (large standalone number > 500 not room count) ──
+      // ── Extract rate — last 4-5 digit number OR after @/rs/rate keyword ──
+      // Examples: "4500", "@4500", "rate 4500", "Rs.4500", "4500/night"
       let adminRate = null;
-      const rateMatch = textNoRemark.match(/(\d{4,6})/g);
-      if (rateMatch) {
-        for (const r of rateMatch.reverse()) {
-          const n = parseInt(r);
-          if (n > 500 && n < 100000) { adminRate = n; break; }
+      const rateKwMatch = textNoRemark.match(/(?:@|rs\.?|rate|price|tariff)\s*(\d{3,6})/i);
+      if (rateKwMatch) {
+        adminRate = parseInt(rateKwMatch[1]);
+      } else {
+        // Last 4-5 digit number that is not part of date (not dd.mm format)
+        const rateEndMatch = textNoRemark.match(/(?:^|\s)(\d{4,5})(?:\/night|\/n|pn|per\s*night)?\s*$/i);
+        if (rateEndMatch) {
+          const n = parseInt(rateEndMatch[1]);
+          if (n >= 1000 && n <= 50000) adminRate = n;
         }
       }
 
