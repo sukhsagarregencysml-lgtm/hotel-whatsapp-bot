@@ -1,6 +1,6 @@
 // Season definitions
 const PEAK_SEASONS = [
-  { start: "2026-04-15", end: "2026-06-30" },
+  { start: "2026-04-15", end: "2026-06-12" },
   { start: "2026-12-21", end: "2027-01-01" },
 ];
 
