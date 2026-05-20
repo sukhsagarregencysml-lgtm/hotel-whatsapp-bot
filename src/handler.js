@@ -16,6 +16,7 @@ const pendingOptIns = {};
 const optedInGuests = {};
 const guestSessions = {};
 const pendingPayments = {}; // phone -> { agentName, amount, total, remaining, voucherNo, ciDate, coDate }
+const pendingCancellations = {}; // voucherNo -> { agentPhone, agentName, guestName, ciDate, coDate, voucherNo, advancePaid }
 
 // Hotel info - customize per hotel
 const HOTEL_INFO = {
@@ -158,6 +159,150 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId }) {
   sessions[from] = session;
   session.agentName = agent.name;
   session.agentCategory = agent.category;
+
+  // ── CANCEL BOOKING COMMAND ────────────────────────────────────
+  if (t === "CANCEL" || t === "CANCEL BOOKING" || t === "CANCELLATION") {
+    // Find all active bookings for this agent from pendingPayments
+    const agentBookings = Object.entries(pendingPayments)
+      .filter(([phone, p]) => phone === from || p.agentPhone === from)
+      .map(([phone, p]) => p);
+
+    if (agentBookings.length === 0) {
+      await sendMessage(from,
+        `❌ No active bookings found to cancel.\n\n` +
+        `If your booking is confirmed and payment was completed, please contact hotel directly:\n📞 +91 98160 03322`
+      );
+      return;
+    }
+
+    if (agentBookings.length === 1) {
+      // Only one booking — show it directly
+      const b = agentBookings[0];
+      session.step = "awaiting_cancel_confirm";
+      session.cancelVoucherNo = b.voucherNo;
+      const daysLeft = Math.round((new Date(b.ciDate) - new Date()) / 86400000);
+      const refund = daysLeft > 15 ? "Full refund" : "No refund (within 15 days)";
+      await sendMessage(from,
+        `❌ *CANCEL BOOKING REQUEST*\n\n` +
+        `Voucher: *${b.voucherNo}*\n` +
+        `Guest: ${b.guestName}\n` +
+        `Check-in: ${fmtDate(b.ciDate)}\n` +
+        `Check-out: ${fmtDate(b.coDate)}\n` +
+        `Advance Paid: Rs.${(b.paidSoFar || b.amount || 0).toLocaleString()}\n\n` +
+        `⚠️ *Cancellation Policy:*\n` +
+        `${daysLeft > 15 ? "✅" : "❌"} ${refund}\n\n` +
+        `Reply *YES* to request cancellation\n` +
+        `Reply *NO* to keep booking`
+      );
+    } else {
+      // Multiple bookings — show list
+      session.step = "awaiting_cancel_select";
+      session.cancelOptions = agentBookings;
+      const lines = agentBookings.map((b, i) =>
+        `*${i+1}.* ${b.voucherNo} — ${b.guestName} — ${fmtDate(b.ciDate)}`
+      );
+      await sendMessage(from,
+        `❌ *Which booking to cancel?*\n\n` +
+        lines.join("\n") + `\n\n` +
+        `Reply with number (1, 2, 3...)`
+      );
+    }
+    return;
+  }
+
+  // Step: awaiting cancel selection (multiple bookings)
+  if (session.step === "awaiting_cancel_select") {
+    const idx = parseInt(t) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= (session.cancelOptions || []).length) {
+      await sendMessage(from, `Please reply with a number between 1 and ${(session.cancelOptions||[]).length}`);
+      return;
+    }
+    const b = session.cancelOptions[idx];
+    session.step = "awaiting_cancel_confirm";
+    session.cancelVoucherNo = b.voucherNo;
+    const daysLeft = Math.round((new Date(b.ciDate) - new Date()) / 86400000);
+    const refund = daysLeft > 15 ? "Full refund" : "No refund (within 15 days)";
+    await sendMessage(from,
+      `❌ *CANCEL BOOKING REQUEST*\n\n` +
+      `Voucher: *${b.voucherNo}*\n` +
+      `Guest: ${b.guestName}\n` +
+      `Check-in: ${fmtDate(b.ciDate)}\n` +
+      `Check-out: ${fmtDate(b.coDate)}\n` +
+      `Advance Paid: Rs.${(b.paidSoFar || b.amount || 0).toLocaleString()}\n\n` +
+      `⚠️ *Cancellation Policy:*\n` +
+      `${daysLeft > 15 ? "✅" : "❌"} ${refund}\n\n` +
+      `Reply *YES* to request cancellation\n` +
+      `Reply *NO* to keep booking`
+    );
+    return;
+  }
+
+  // Step: awaiting cancel confirmation
+  if (session.step === "awaiting_cancel_confirm") {
+    if (["YES","Y","HAAN","HA"].includes(t)) {
+      const voucherNo = session.cancelVoucherNo;
+      // Find booking in pendingPayments
+      const bookingEntry = Object.entries(pendingPayments).find(([p, b]) => b.voucherNo === voucherNo);
+      const booking = bookingEntry ? bookingEntry[1] : null;
+
+      if (!booking) {
+        await sendMessage(from, `Could not find booking ${voucherNo}. Please contact hotel: 📞 +91 98160 03322`);
+        session.step = "idle";
+        return;
+      }
+
+      const daysLeft = Math.round((new Date(booking.ciDate) - new Date()) / 86400000);
+      const refund = daysLeft > 15 ? booking.paidSoFar || booking.amount || 0 : 0;
+
+      // Store in pendingCancellations for admin approval
+      pendingCancellations[voucherNo] = {
+        agentPhone: from,
+        agentName: agent.name,
+        guestName: booking.guestName,
+        ciDate: booking.ciDate,
+        coDate: booking.coDate,
+        voucherNo,
+        advancePaid: booking.paidSoFar || booking.amount || 0,
+        refundAmount: refund,
+        daysLeft,
+        stayezeeId: booking.stayezeeId,
+        requestedAt: new Date().toISOString()
+      };
+
+      // Notify agent
+      await sendMessage(from,
+        `✅ *Cancellation request submitted!*\n\n` +
+        `Voucher: *${voucherNo}*\n` +
+        `Guest: ${booking.guestName}\n\n` +
+        `Your request is pending admin approval.\n` +
+        `You will be notified once processed. 🙏`
+      );
+
+      // Notify admin
+      await sendReminder(ADMIN_PHONE,
+        `❌ *CANCELLATION REQUEST*\n\n` +
+        `Agent: ${agent.name} (${from})\n` +
+        `Voucher: *${voucherNo}*\n` +
+        `Guest: ${booking.guestName}\n` +
+        `Check-in: ${fmtDate(booking.ciDate)}\n` +
+        `Advance Paid: Rs.${(booking.paidSoFar || booking.amount || 0).toLocaleString()}\n` +
+        `Days to Check-in: ${daysLeft}\n` +
+        `Refund: ${daysLeft > 15 ? `Rs.${refund.toLocaleString()} (Full)` : "No refund"}\n\n` +
+        `To approve: *APPROVE CANCEL ${voucherNo}*\n` +
+        `To reject: *REJECT CANCEL ${voucherNo}*`
+      );
+
+      session.step = "idle";
+      delete session.cancelVoucherNo;
+      delete session.cancelOptions;
+    } else if (["NO","N","NAHI"].includes(t)) {
+      await sendMessage(from, `Cancellation cancelled. Your booking is still active. 🙏`);
+      session.step = "idle";
+      delete session.cancelVoucherNo;
+      delete session.cancelOptions;
+    }
+    return;
+  }
 
   // Step: awaiting guest name
   if (session.step === "awaiting_guest_name") {
@@ -1044,11 +1189,14 @@ async function confirmAndSave(from, agent, session) {
         ciDate: session.ciDate,
         coDate: session.coDate,
         guestName: session.guestName,
+        roomType: session.roomType || "deluxe",
+        rooms: session.rooms || 1,
+        plan: session.plan || "CP",
         paymentSchedule,
         daysToCheckin,
         paidSoFar: 0,
-        paymentStep: 1, // 1=first, 2=second, 3=final
-        stayezeeId: session.stayezeeId || null, // for cancellation
+        paymentStep: 1,
+        stayezeeId: session.stayezeeId || null,
       };
 
       // Send QR for first payment — high resolution for gallery scanning
@@ -1613,6 +1761,34 @@ async function handleAdminReply(from, text, t) {
       agentMsg += `🎉 All payments complete! Booking fully confirmed.\n`;
       agentMsg += `Check-in: ${fmtDate(pending.ciDate)}\nCheck-out: ${fmtDate(pending.coDate)}\n\nThank you! 🙏`;
       await sendReminder(agentPhone, agentMsg);
+
+      // Send guest voucher (no price) to agent — for forwarding to guest
+      const guestVoucher =
+        `🏨 *HOTEL SUKHSAGAR REGENCY*\n` +
+        `Shimla, Himachal Pradesh\n` +
+        `📞 +91 98160 03322\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n` +
+        `📋 *GUEST BOOKING VOUCHER*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `Voucher No: *${pending.voucherNo}*\n\n` +
+        `*GUEST DETAILS*\n` +
+        `Name: *${pending.guestName}*\n\n` +
+        `*BOOKING DETAILS*\n` +
+        `Check-in:  *${fmtDate(pending.ciDate)}*\n` +
+        `Check-out: *${fmtDate(pending.coDate)}*\n` +
+        `Nights:    *${Math.round((new Date(pending.coDate)-new Date(pending.ciDate))/86400000)}*\n` +
+        `Rooms:     *${pending.rooms || 1} x ${pending.roomType || "Deluxe"}*\n` +
+        `Plan:      *${pending.plan || "CP"}*\n\n` +
+        `*HOTEL POLICIES*\n` +
+        `Check-in time: 12:00 PM\n` +
+        `Check-out time: 11:00 AM\n` +
+        `Valid ID required at check-in\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n` +
+        `_This voucher is valid for the dates mentioned above._\n` +
+        `_Please carry a valid photo ID at check-in._`;
+
+      await sendReminder(agentPhone, `📄 *Guest Voucher* (forward to your guest):\n\n` + guestVoucher);
+
       delete pendingPayments[agentPhone];
     } else {
       // Determine next payment details
@@ -1724,6 +1900,85 @@ async function handleAdminReply(from, text, t) {
     );
 
     if (remaining <= 0) delete pendingPayments[agentPhone];
+    return;
+  }
+
+  // APPROVE CANCEL <voucherNo>
+  if (t.startsWith("APPROVE CANCEL")) {
+    const voucherNo = text.trim().split(/\s+/)[2];
+    const cancel = pendingCancellations[voucherNo];
+    if (!cancel) {
+      await sendMessage(from, `No pending cancellation found for ${voucherNo}`);
+      return;
+    }
+
+    // Cancel in Stayezee
+    if (cancel.stayezeeId) {
+      try {
+        await cancelReservation(cancel.stayezeeId);
+        console.log(`Stayezee reservation ${cancel.stayezeeId} cancelled`);
+      } catch(e) { console.error("Stayezee cancel error:", e.message); }
+    }
+
+    // Remove from pendingPayments
+    delete pendingPayments[cancel.agentPhone];
+    delete pendingCancellations[voucherNo];
+
+    // Notify admin
+    await sendMessage(from,
+      `✅ Cancellation approved for ${voucherNo}\n` +
+      `Agent: ${cancel.agentName} (${cancel.agentPhone})\n` +
+      `Guest: ${cancel.guestName}\n` +
+      `Refund: ${cancel.daysLeft > 15 ? `Rs.${cancel.refundAmount.toLocaleString()} (Full refund)` : "No refund"}`
+    );
+
+    // Notify agent
+    await sendReminder(cancel.agentPhone,
+      `✅ *BOOKING CANCELLED*\n\n` +
+      `Voucher: *${voucherNo}*\n` +
+      `Guest: ${cancel.guestName}\n` +
+      `Check-in: ${fmtDate(cancel.ciDate)}\n\n` +
+      `Your cancellation has been approved.\n` +
+      (cancel.daysLeft > 15
+        ? `💰 Refund of *Rs.${cancel.refundAmount.toLocaleString()}* will be processed shortly.`
+        : `❌ No refund applicable (cancellation within 15 days of check-in).`) +
+      `\n\nThank you for your business! 🙏`
+    );
+    return;
+  }
+
+  // REJECT CANCEL <voucherNo>
+  if (t.startsWith("REJECT CANCEL")) {
+    const voucherNo = text.trim().split(/\s+/)[2];
+    const cancel = pendingCancellations[voucherNo];
+    if (!cancel) {
+      await sendMessage(from, `No pending cancellation found for ${voucherNo}`);
+      return;
+    }
+
+    delete pendingCancellations[voucherNo];
+
+    await sendMessage(from, `❌ Cancellation rejected for ${voucherNo}`);
+    await sendReminder(cancel.agentPhone,
+      `❌ *CANCELLATION REJECTED*\n\n` +
+      `Voucher: *${voucherNo}*\n` +
+      `Guest: ${cancel.guestName}\n\n` +
+      `Your cancellation request has been rejected.\n` +
+      `Your booking is still active.\n\n` +
+      `For assistance contact: 📞 +91 98160 03322`
+    );
+    return;
+  }
+
+  // LIST CANCEL — show all pending cancellations
+  if (t === "LIST CANCEL") {
+    const keys = Object.keys(pendingCancellations);
+    if (!keys.length) { await sendMessage(from, "No pending cancellations."); return; }
+    const lines = keys.map(k => {
+      const c = pendingCancellations[k];
+      return `• ${c.voucherNo} — ${c.guestName} — ${fmtDate(c.ciDate)} (${c.agentName})`;
+    });
+    await sendMessage(from, `📋 *Pending Cancellations (${keys.length}):*\n\n${lines.join("\n")}`);
     return;
   }
 
@@ -1960,4 +2215,4 @@ async function safeHandleIncoming(args) {
   }
 }
 
-module.exports = { handleIncoming: safeHandleIncoming, pendingOptIns, optedInGuests, pendingPayments };
+module.exports = { handleIncoming: safeHandleIncoming, pendingOptIns, optedInGuests, pendingPayments, pendingCancellations };
