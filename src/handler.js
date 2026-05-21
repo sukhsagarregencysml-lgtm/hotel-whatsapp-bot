@@ -2015,7 +2015,11 @@ async function handleAdminReply(from, text, t) {
 
   // BOOK command — smart parser handles any format admin types
   // BOOK 919876543210 Rahul Singh 22july 24july 2dlx CP 4500 REMARK honeymoon couple
-  if (t.startsWith("BOOK ")) {
+  const isBook1 = t.startsWith("BOOK1 ");
+  const isBook2 = t.startsWith("BOOK2 ");
+  const isBook = t.startsWith("BOOK ") || isBook1 || isBook2;
+  if (isBook) {
+    if (isBook1 || isBook2) text = "BOOK " + text.slice(6);
     try {
       const rawText = text.trim();
       const parts = rawText.split(/\s+/);
@@ -2032,18 +2036,24 @@ async function handleAdminReply(from, text, t) {
       const remark = remarkMatch ? remarkMatch[1].trim() : null;
       const textNoRemark = remarkMatch ? afterPhone.slice(0, remarkMatch.index).trim() : afterPhone;
 
-      // ── Extract rate — last 4-5 digit number OR after @/rs/rate keyword ──
-      // Examples: "4500", "@4500", "rate 4500", "Rs.4500", "4500/night"
+
+      // ── Extract rate — LAST token if it's a plain number ──────
+      // "BOOK1 919876543210 Rahul 22july 24july 2dlx CP 3000" → rate=3000
       let adminRate = null;
-      const rateKwMatch = textNoRemark.match(/(?:@|rs\.?|rate|price|tariff)\s*(\d{3,6})/i);
+
+      // Method 1: explicit keyword @3000, Rs.3000, rate 3000
+      const rateKwMatch = textNoRemark.match(/(?:@|rs\.?\s*|rate\s*|price\s*|tariff\s*)(\d{3,6})/i);
       if (rateKwMatch) {
         adminRate = parseInt(rateKwMatch[1]);
-      } else {
-        // Last 4-5 digit number that is not part of date (not dd.mm format)
-        const rateEndMatch = textNoRemark.match(/(?:^|\s)(\d{4,5})(?:\/night|\/n|pn|per\s*night)?\s*$/i);
-        if (rateEndMatch) {
-          const n = parseInt(rateEndMatch[1]);
-          if (n >= 1000 && n <= 50000) adminRate = n;
+      }
+
+      // Method 2: last word is a plain number (the rate)
+      if (!adminRate) {
+        const tokens = textNoRemark.trim().split(/\s+/);
+        const lastToken = tokens[tokens.length - 1].replace(/[^0-9]/g, '');
+        if (/^\d{3,5}$/.test(lastToken)) {
+          const n = parseInt(lastToken);
+          if (n >= 500 && n <= 50000) adminRate = n;
         }
       }
 
