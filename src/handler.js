@@ -2062,51 +2062,39 @@ async function handleAdminReply(from, text, t) {
       const planMatch = textNoRemark.match(/(MAPAI|MAP|CPAI|CP|EP)/i);
       if (planMatch) plan = planMatch[1].toUpperCase();
 
-      // ── Extract room type + count (handles "2dlx", "2 dlx", "2super" etc) ──
+      // ── Extract room type + count — EXACT what admin writes ────
       let roomType = "deluxe";
       let rooms = 1;
+      let roomsExplicit = false;
 
-      // Combined: "2dlx", "2sdlx", "2honey" etc
-      const combinedRoomRe = /(\d+)\s*(?:super\s*del(?:uxe)?|sdlx?|s\.?dlx|superdeluxe)/i;
-      const honeyRoomRe = /(\d+)\s*(?:honey(?:moon)?|hm|hmoon)/i;
-      const dlxRoomRe = /(\d+)\s*(?:del(?:uxe)?|dlx|delx)/i;
-      const superFirstRe = /(?:super\s*del(?:uxe)?|sdlx?|superdeluxe)\s*(\d+)/i;
-      const honeyFirstRe = /(?:honey(?:moon)?|hm)\s*(\d+)/i;
-      const dlxFirstRe = /(?:del(?:uxe)?|dlx)\s*(\d+)/i;
-      const roomsOnlyRe = /(\d+)\s*r(?:ooms?)?/i;
+      // Remove rate number from text to avoid confusion with room count
+      const textForRooms = adminRate
+        ? textNoRemark.replace(String(adminRate), "").trim()
+        : textNoRemark;
 
-      if (combinedRoomRe.test(textNoRemark)) {
-        const m = textNoRemark.match(combinedRoomRe);
-        rooms = parseInt(m[1]); roomType = "superdeluxe";
-      } else if (superFirstRe.test(textNoRemark)) {
-        const m = textNoRemark.match(superFirstRe);
-        rooms = parseInt(m[1]); roomType = "superdeluxe";
-      } else if (honeyRoomRe.test(textNoRemark)) {
-        const m = textNoRemark.match(honeyRoomRe);
-        rooms = parseInt(m[1]); roomType = "honeymoon";
-      } else if (honeyFirstRe.test(textNoRemark)) {
-        const m = textNoRemark.match(honeyFirstRe);
-        rooms = parseInt(m[1]); roomType = "honeymoon";
-      } else if (dlxRoomRe.test(textNoRemark)) {
-        const m = textNoRemark.match(dlxRoomRe);
-        rooms = parseInt(m[1]); roomType = "deluxe";
-      } else if (dlxFirstRe.test(textNoRemark)) {
-        const m = textNoRemark.match(dlxFirstRe);
-        rooms = parseInt(m[1]); roomType = "deluxe";
-      } else if (roomsOnlyRe.test(textNoRemark)) {
-        const m = textNoRemark.match(roomsOnlyRe);
-        rooms = parseInt(m[1]);
-        if (/super|sdlx/i.test(textNoRemark)) roomType = "superdeluxe";
-        else if (/honey|hm/i.test(textNoRemark)) roomType = "honeymoon";
-        else roomType = "deluxe";
-      } else {
-        // Check for standalone room type keywords
-        if (/super|sdlx/i.test(textNoRemark)) roomType = "superdeluxe";
-        else if (/honey|hm/i.test(textNoRemark)) roomType = "honeymoon";
-        else roomType = "deluxe";
-        // Check for standalone number <=20 as room count
-        const numMatch = textNoRemark.match(/([1-9]|1\d|20)/);
-        if (numMatch) rooms = parseInt(numMatch[1]);
+      // Room type
+      if (/super|sdlx/i.test(textForRooms)) roomType = "superdeluxe";
+      else if (/honey|\bhm\b/i.test(textForRooms)) roomType = "honeymoon";
+      else roomType = "deluxe";
+
+      // Room count — explicit patterns
+      const roomPatterns = [
+        /(\d+)\s*(?:super\s*del(?:uxe)?|sdlx|superdeluxe)/i,
+        /(\d+)\s*(?:honey(?:moon)?|\bhm\b)/i,
+        /(\d+)\s*(?:del(?:uxe)?|dlx)\b/i,
+        /(\d+)\s*r(?:ooms?)\b/i,
+      ];
+      for (const re of roomPatterns) {
+        const m = textForRooms.match(re);
+        if (m) { rooms = parseInt(m[1]); roomsExplicit = true; break; }
+      }
+
+      // Auto rooms from guests: 1-3 = 1 room, 4-6 = 2 rooms, 7-9 = 3 rooms
+      if (!roomsExplicit) {
+        const guestMatch = textForRooms.match(/(\d+)\s*(?:guest|pax|person|adult|people)/i);
+        if (guestMatch) {
+          rooms = Math.ceil(parseInt(guestMatch[1]) / 3);
+        }
       }
 
       // ── Extract dates ─────────────────────────────────────────
