@@ -2123,7 +2123,11 @@ async function handleAdminReply(from, text, t) {
 
       // ── Extract dates ─────────────────────────────────────────
       const { parseEnquiry } = require("./parser");
-      const parsed = parseEnquiry(textNoRemark + " " + rooms + " " + roomType + " " + plan);
+      // Pass all room types to parser if multiple, else single
+      const roomInfoForParser = roomTypes.length > 1
+        ? roomTypes.map(r => r.count + r.type).join(" ") + " " + plan
+        : rooms + " " + roomType + " " + plan;
+      const parsed = parseEnquiry(textNoRemark + " " + roomInfoForParser);
 
       if (!parsed || !parsed.ciDate || !parsed.coDate) {
         await sendMessage(from,
@@ -2171,7 +2175,16 @@ async function handleAdminReply(from, text, t) {
           return;
         }
         finalRate = rateInfo.rate;
-        grandTotal = finalRate * rooms * nights;
+        if (roomTypes.length > 1) {
+          const { getCustomerRate: gcr } = require("./rates");
+          grandTotal = 0;
+          for (const rt of roomTypes) {
+            const ri = gcr(rt.type, plan, parsed.ciDate);
+            grandTotal += (ri?.rate || finalRate) * rt.count * nights;
+          }
+        } else {
+          grandTotal = finalRate * rooms * nights;
+        }
         rateTypeLabel = "(customer rate)";
       } else {
         const { getRate } = require("./rates");
@@ -2181,7 +2194,16 @@ async function handleAdminReply(from, text, t) {
           return;
         }
         finalRate = rateInfo.rate;
-        grandTotal = finalRate * rooms * nights;
+        // For multiple room types, calculate each type separately
+        if (roomTypes.length > 1) {
+          grandTotal = 0;
+          for (const rt of roomTypes) {
+            const ri = getRate(rt.type, plan, parsed.ciDate, agent.category === "Guest" ? "C" : agent.category);
+            grandTotal += (ri?.rate || finalRate) * rt.count * nights;
+          }
+        } else {
+          grandTotal = finalRate * rooms * nights;
+        }
         rateTypeLabel = "(agent rate)";
       }
 
