@@ -2062,39 +2062,63 @@ async function handleAdminReply(from, text, t) {
       const planMatch = textNoRemark.match(/(MAPAI|MAP|CPAI|CP|EP)/i);
       if (planMatch) plan = planMatch[1].toUpperCase();
 
-      // ── Extract room type + count — EXACT what admin writes ────
+      // ── Extract room type + count — supports multiple room types ──
+      // e.g. "2dlx 2honey 2super CP 4500" or "2 deluxe 1 honeymoon MAP"
       let roomType = "deluxe";
       let rooms = 1;
-      let roomsExplicit = false;
+      let roomTypes = []; // [{type, count}]
 
-      // Remove rate number from text to avoid confusion with room count
+      // Remove rate number from text to avoid confusion
       const textForRooms = adminRate
-        ? textNoRemark.replace(String(adminRate), "").trim()
+        ? textNoRemark.replace(new RegExp('\\b' + String(adminRate) + '\\b'), "").trim()
         : textNoRemark;
 
-      // Room type
-      if (/super|sdlx/i.test(textForRooms)) roomType = "superdeluxe";
-      else if (/honey|\bhm\b/i.test(textForRooms)) roomType = "honeymoon";
-      else roomType = "deluxe";
-
-      // Room count — explicit patterns
-      const roomPatterns = [
-        /(\d+)\s*(?:super\s*del(?:uxe)?|sdlx|superdeluxe)/i,
-        /(\d+)\s*(?:honey(?:moon)?|\bhm\b)/i,
-        /(\d+)\s*(?:del(?:uxe)?|dlx)\b/i,
-        /(\d+)\s*r(?:ooms?)\b/i,
+      // Find all room type mentions with counts
+      const roomTypePatterns = [
+        { re: /(\d+)\s*(?:super\s*del(?:uxe)?|sdlx?|s\.?dlx|superdeluxe|spdlx)/gi, type: "superdeluxe" },
+        { re: /(\d+)\s*(?:honey(?:moon)?|hm|hmoon)/gi, type: "honeymoon" },
+        { re: /(\d+)\s*(?:del(?:uxe)?|dlx|delx)/gi, type: "deluxe" },
       ];
-      for (const re of roomPatterns) {
-        const m = textForRooms.match(re);
-        if (m) { rooms = parseInt(m[1]); roomsExplicit = true; break; }
+
+      for (const { re, type } of roomTypePatterns) {
+        let m;
+        re.lastIndex = 0;
+        while ((m = re.exec(textForRooms)) !== null) {
+          roomTypes.push({ type, count: parseInt(m[1]) });
+        }
       }
 
-      // Auto rooms from guests: 1-3 = 1 room, 4-6 = 2 rooms, 7-9 = 3 rooms
-      if (!roomsExplicit) {
-        const guestMatch = textForRooms.match(/(\d+)\s*(?:guest|pax|person|adult|people)/i);
-        if (guestMatch) {
-          rooms = Math.ceil(parseInt(guestMatch[1]) / 3);
+      // Also check reverse order: "super 2", "honey 1"
+      if (roomTypes.length === 0) {
+        const reversePatterns = [
+          { re: /(?:super\s*del(?:uxe)?|sdlx?|superdeluxe|spdlx)\s*(\d+)/gi, type: "superdeluxe" },
+          { re: /(?:honey(?:moon)?|hm)\s*(\d+)/gi, type: "honeymoon" },
+          { re: /(?:del(?:uxe)?|dlx|delx)\s*(\d+)/gi, type: "deluxe" },
+          { re: /(\d+)\s*r(?:ooms?)/gi, type: "deluxe" },
+        ];
+        for (const { re, type } of reversePatterns) {
+          let m;
+          re.lastIndex = 0;
+          while ((m = re.exec(textForRooms)) !== null) {
+            roomTypes.push({ type, count: parseInt(m[1]) });
+          }
         }
+      }
+
+      if (roomTypes.length > 0) {
+        // Multiple room types — use first type as primary, sum all counts
+        roomType = roomTypes[0].type;
+        rooms = roomTypes.reduce((sum, r) => sum + r.count, 0);
+      } else {
+        // No explicit rooms — detect type and auto-calc from guests
+        if (/super|sdlx|spdlx/i.test(textForRooms)) roomType = "superdeluxe";
+        else if (/honey|hm/i.test(textForRooms)) roomType = "honeymoon";
+        else roomType = "deluxe";
+
+        // Auto rooms from guests: 1-3=1, 4-6=2, 7-9=3
+        const guestMatch = textForRooms.match(/(\d+)\s*(?:guest|pax|person|adult|people)/i);
+        if (guestMatch) rooms = Math.ceil(parseInt(guestMatch[1]) / 3);
+        else rooms = 1;
       }
 
       // ── Extract dates ─────────────────────────────────────────
@@ -2128,29 +2152,52 @@ async function handleAdminReply(from, text, t) {
         await sendMessage(from, `📋 *${guestName}* (${fullPhone}) auto-added as Guest`);
       }
 
-      // ── Get rate ──────────────────────────────────────────────
+      // ── Get rate — admin puts TOTAL amount, not per night ────────
+      const nights = Math.max(1, Math.round((new Date(parsed.coDate) - new Date(parsed.ciDate)) / 86400000));
+      let grandTotal;
       let finalRate;
+      let rateTypeLabel = "";
+
       if (adminRate) {
-        finalRate = adminRate;
+        // Admin put total amount directly — use as-is
+        grandTotal = adminRate;
+        finalRate = Math.round(adminRate / (rooms * nights)); // per night for display
+        rateTypeLabel = "(admin total)";
+      } else if (isBook1) {
+        const { getCustomerRate } = require("./rates");
+        const rateInfo = getCustomerRate(roomType, plan, parsed.ciDate);
+        if (!rateInfo) {
+          await sendMessage(from, `❌ Rate not found for ${roomType} ${plan}.\nAdd total: *BOOK1 ... 14400*`);
+          return;
+        }
+        finalRate = rateInfo.rate;
+        grandTotal = finalRate * rooms * nights;
+        rateTypeLabel = "(customer rate)";
       } else {
         const { getRate } = require("./rates");
         const rateInfo = getRate(roomType, plan, parsed.ciDate, agent.category === "Guest" ? "C" : agent.category);
         if (!rateInfo) {
-          await sendMessage(from, `❌ Rate not found for ${roomType} ${plan}.\nAdd rate: *BOOK ... 4500*`);
+          await sendMessage(from, `❌ Rate not found for ${roomType} ${plan}.\nAdd total: *BOOK ... 14400*`);
           return;
         }
         finalRate = rateInfo.rate;
+        grandTotal = finalRate * rooms * nights;
+        rateTypeLabel = "(agent rate)";
       }
 
-      const nights = Math.max(1, Math.round((new Date(parsed.coDate) - new Date(parsed.ciDate)) / 86400000));
-      const grandTotal = finalRate * rooms * nights;
       const advanceAmount = Math.round(grandTotal * 0.20);
+
+      // Build room summary for multiple types
+      const roomSummary = roomTypes.length > 1
+        ? roomTypes.map(r => `${r.count} ${r.type === "superdeluxe" ? "Super Deluxe" : r.type === "honeymoon" ? "Honeymoon" : "Deluxe"}`).join(" + ")
+        : `${rooms} x ${roomType === "superdeluxe" ? "Super Deluxe" : roomType === "honeymoon" ? "Honeymoon" : "Deluxe"}`;
 
       const fakeSession = {
         ciDate: parsed.ciDate,
         coDate: parsed.coDate,
         roomType,
         rooms,
+        roomTypes: roomTypes.length > 1 ? roomTypes : null,
         plan: plan.toUpperCase(),
         rate: finalRate,
         nights,
@@ -2169,9 +2216,9 @@ async function handleAdminReply(from, text, t) {
       await sendMessage(from,
         `⏳ Creating booking for *${guestName}*...\n` +
         `${fmtDate(parsed.ciDate)} → ${fmtDate(parsed.coDate)}\n` +
-        `${rooms} x ${roomType} | ${plan}\n` +
-        `Rate: Rs.${finalRate.toLocaleString()}/night${adminRate ? " (admin rate)" : ""}\n` +
-        `Total: Rs.${Math.round(grandTotal).toLocaleString()}` +
+        `${roomSummary} | ${plan}\n` +
+        `Total: *Rs.${Math.round(grandTotal).toLocaleString()}*${adminRate ? " (admin set)" : ""}\n` +
+        `Per night: Rs.${finalRate.toLocaleString()} ${rateTypeLabel}` +
         remarkText
       );
 
@@ -2182,10 +2229,10 @@ async function handleAdminReply(from, text, t) {
         `Guest: ${guestName} (${fullPhone})\n` +
         `Check-in: ${fmtDate(parsed.ciDate)}\n` +
         `Check-out: ${fmtDate(parsed.coDate)}\n` +
-        `Rooms: ${rooms} x ${roomType}\n` +
+        `Rooms: ${roomSummary}\n` +
         `Plan: ${plan}\n` +
-        `Rate: Rs.${finalRate.toLocaleString()}/night${adminRate ? " (admin rate)" : ""}\n` +
-        `Total: Rs.${Math.round(grandTotal).toLocaleString()}\n` +
+        `Total: *Rs.${Math.round(grandTotal).toLocaleString()}*\n` +
+        `Per night: Rs.${finalRate.toLocaleString()} ${rateTypeLabel}\n` +
         `Advance (20%): Rs.${advanceAmount.toLocaleString()}` +
         remarkText + `\n\n` +
         `Voucher + QR sent to ${fullPhone} ✅`
