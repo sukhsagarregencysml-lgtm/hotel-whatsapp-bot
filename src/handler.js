@@ -719,12 +719,13 @@ async function checkAndRespond(from, agent, session) {
         ? session.roomTypes
         : [{ type: session.roomType || "deluxe", count: session.rooms }];
 
-      // Get cumulative tally for this agent (financial year)
-      const tally = await getTally(from);
+      // Get cumulative tally — skip for guest bookings (BOOK1)
+      const isGuestBooking = session.isGuestBooking || false;
+      const tally = isGuestBooking ? { roomsBooked: 0, freeRoomsUsed: 0 } : await getTally(from);
       const totalRoomsThisBooking = roomTypesList.reduce((s, r) => s + r.count, 0);
-      const roomsAfterBooking = tally.roomsBooked + totalRoomsThisBooking;
-      const freeRoomsAvailable = Math.floor(tally.roomsBooked / 10) - (tally.freeRoomsUsed || 0);
-      const newFreeRoomsEarned = Math.floor(roomsAfterBooking / 10) - Math.floor(tally.roomsBooked / 10);
+      const roomsAfterBooking = isGuestBooking ? 0 : tally.roomsBooked + totalRoomsThisBooking;
+      const freeRoomsAvailable = isGuestBooking ? 0 : Math.floor(tally.roomsBooked / 10) - (tally.freeRoomsUsed || 0);
+      const newFreeRoomsEarned = isGuestBooking ? 0 : Math.floor(roomsAfterBooking / 10) - Math.floor(tally.roomsBooked / 10);
 
       // Free rooms to apply = available + newly earned
       const freeRoomsToApply = freeRoomsAvailable + newFreeRoomsEarned;
@@ -1102,8 +1103,9 @@ async function confirmAndSave(from, agent, session) {
       `Plan: ${session.plan}\n` +
       `Total: Rs.${Math.round(grandTotal).toLocaleString()}`;
 
-    // Update financial year tally
+    // Update financial year tally — skip for guest bookings
     try {
+      if (session.isGuestBooking) { console.log("Guest booking — skipping tally update"); throw new Error("skip"); }
       const tallyResult = await updateTally(from, agent.name, rooms);
       if (session.freeRoomsApplied > 0) {
         await useFreeRooms(from, agent.name, session.freeRoomsApplied);
@@ -2063,62 +2065,54 @@ async function handleAdminReply(from, text, t) {
       if (planMatch) plan = planMatch[1].toUpperCase();
 
       // ── Extract room type + count — supports multiple room types ──
-      // e.g. "2dlx 2honey 2super CP 4500" or "2 deluxe 1 honeymoon MAP"
       let roomType = "deluxe";
       let rooms = 1;
-      let roomTypes = []; // [{type, count}]
+      let roomTypes = [];
 
-      // Remove rate number from text to avoid confusion
+      // Remove rate from text
       const textForRooms = adminRate
-        ? textNoRemark.replace(new RegExp('\\b' + String(adminRate) + '\\b'), "").trim()
+        ? textNoRemark.replace(String(adminRate), "").replace("@", "").trim()
         : textNoRemark;
 
-      // Find all room type mentions with counts
-      const roomTypePatterns = [
-        { re: /(\d+)\s*(?:super\s*del(?:uxe)?|sdlx?|s\.?dlx|superdeluxe|spdlx)/gi, type: "superdeluxe" },
-        { re: /(\d+)\s*(?:honey(?:moon)?|hm|hmoon)/gi, type: "honeymoon" },
-        { re: /(\d+)\s*(?:del(?:uxe)?|dlx|delx)/gi, type: "deluxe" },
-      ];
+      // Detect each room type with count — order matters (super before deluxe)
+      const superRe = /(\d+)\s*(?:super\s*del(?:uxe)?|sdelx?|sdlx?|superdeluxe|spdlx)/gi;
+      const honeyRe = /(\d+)\s*(?:honey(?:moon)?|hmoon|hm(?=\s|$|\d))/gi;
+      const dlxRe   = /(\d+)\s*(?:del(?:uxe)?|dlx|delx)(?!\s*(?:super|sd))/gi;
 
-      for (const { re, type } of roomTypePatterns) {
-        let m;
-        re.lastIndex = 0;
-        while ((m = re.exec(textForRooms)) !== null) {
-          roomTypes.push({ type, count: parseInt(m[1]) });
-        }
-      }
+      // Remove super matches first so deluxe doesn't pick them up
+      let textForDlx = textForRooms.replace(/\d+\s*(?:super\s*del(?:uxe)?|sdelx?|sdlx?|superdeluxe|spdlx)/gi, '');
 
-      // Also check reverse order: "super 2", "honey 1"
+      let m;
+      superRe.lastIndex = 0;
+      while ((m = superRe.exec(textForRooms)) !== null)
+        roomTypes.push({ type: "superdeluxe", count: parseInt(m[1]) });
+
+      honeyRe.lastIndex = 0;
+      while ((m = honeyRe.exec(textForRooms)) !== null)
+        roomTypes.push({ type: "honeymoon", count: parseInt(m[1]) });
+
+      dlxRe.lastIndex = 0;
+      while ((m = dlxRe.exec(textForDlx)) !== null)
+        roomTypes.push({ type: "deluxe", count: parseInt(m[1]) });
+
+      // Also try "Xr" or "X rooms" as fallback
       if (roomTypes.length === 0) {
-        const reversePatterns = [
-          { re: /(?:super\s*del(?:uxe)?|sdlx?|superdeluxe|spdlx)\s*(\d+)/gi, type: "superdeluxe" },
-          { re: /(?:honey(?:moon)?|hm)\s*(\d+)/gi, type: "honeymoon" },
-          { re: /(?:del(?:uxe)?|dlx|delx)\s*(\d+)/gi, type: "deluxe" },
-          { re: /(\d+)\s*r(?:ooms?)/gi, type: "deluxe" },
-        ];
-        for (const { re, type } of reversePatterns) {
-          let m;
-          re.lastIndex = 0;
-          while ((m = re.exec(textForRooms)) !== null) {
-            roomTypes.push({ type, count: parseInt(m[1]) });
-          }
-        }
+        const rRe = /(\d+)\s*r(?:ooms?)?\b/gi;
+        while ((m = rRe.exec(textForRooms)) !== null)
+          roomTypes.push({ type: "deluxe", count: parseInt(m[1]) });
       }
 
       if (roomTypes.length > 0) {
-        // Multiple room types — use first type as primary, sum all counts
         roomType = roomTypes[0].type;
-        rooms = roomTypes.reduce((sum, r) => sum + r.count, 0);
+        rooms = roomTypes.reduce((s, r) => s + r.count, 0);
       } else {
-        // No explicit rooms — detect type and auto-calc from guests
-        if (/super|sdlx|spdlx/i.test(textForRooms)) roomType = "superdeluxe";
-        else if (/honey|hm/i.test(textForRooms)) roomType = "honeymoon";
+        // Auto detect type
+        if (/super|sdelx|sdlx/i.test(textForRooms)) roomType = "superdeluxe";
+        else if (/honey|hmoon|\bhm\b/i.test(textForRooms)) roomType = "honeymoon";
         else roomType = "deluxe";
-
-        // Auto rooms from guests: 1-3=1, 4-6=2, 7-9=3
-        const guestMatch = textForRooms.match(/(\d+)\s*(?:guest|pax|person|adult|people)/i);
-        if (guestMatch) rooms = Math.ceil(parseInt(guestMatch[1]) / 3);
-        else rooms = 1;
+        // Auto rooms from guests
+        const gm = textForRooms.match(/(\d+)\s*(?:guest|pax|person|adult|people)/i);
+        rooms = gm ? Math.ceil(parseInt(gm[1]) / 3) : 1;
       }
 
       // ── Extract dates ─────────────────────────────────────────
@@ -2243,6 +2237,9 @@ async function handleAdminReply(from, text, t) {
         `Per night: Rs.${finalRate.toLocaleString()} ${rateTypeLabel}` +
         remarkText
       );
+
+      // For BOOK1 (guest booking) — skip agent tally and free room logic
+      if (isBook1) fakeSession.isGuestBooking = true;
 
       await confirmAndSave(fullPhone, agent, fakeSession);
 
