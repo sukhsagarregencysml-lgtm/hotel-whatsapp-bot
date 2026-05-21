@@ -937,8 +937,21 @@ async function confirmAndSave(from, agent, session) {
     const roomTotal = rate * rooms * nights;
     const freeRoomDiscount = session.freeRoomDiscount || 0;
     const freeRoomsApplied = session.freeRoomsApplied || 0;
-    const grandTotal = roomTotal + extraCharge - freeRoomDiscount;
-    const typeName = pmsRoomType;
+    // Use pre-calculated grandTotal if admin set it (avoids recalculation errors)
+    const grandTotal = session.grandTotal
+      ? session.grandTotal + extraCharge - freeRoomDiscount
+      : roomTotal + extraCharge - freeRoomDiscount;
+
+    // Build room display string — use roomTypes if multiple types
+    const roomTypesList2 = session.roomTypes && session.roomTypes.length > 1
+      ? session.roomTypes
+      : null;
+    const typeName = roomTypesList2
+      ? roomTypesList2.map(r => `${r.count} x ${r.type === "honeymoon" ? "Honeymoon" : r.type === "superdeluxe" ? "Super Deluxe" : "Deluxe"}`).join(" + ")
+      : pmsRoomType;
+    const roomsDisplay = roomTypesList2
+      ? roomTypesList2.map(r => `${r.count} x ${r.type === "honeymoon" ? "Honeymoon" : r.type === "superdeluxe" ? "Super Deluxe" : "Deluxe"}`).join(" + ")
+      : `${rooms} x ${pmsRoomType}`;
 
     // Generate voucher number
     const now = new Date();
@@ -965,7 +978,7 @@ async function confirmAndSave(from, agent, session) {
       `Check-in:  *${fmtDate(session.ciDate)}*\n` +
       `Check-out: *${fmtDate(session.coDate)}*\n` +
       `Nights:    *${nights}*\n` +
-      `Rooms:     *${rooms} x ${typeName}*\n` +
+      `Rooms:     *${roomsDisplay}*\n` +
       `Adults:    *${session.adults || 1}*\n` +
       `Kids:      *${session.kids || 0}${session.kidAges ? ` (${session.kidAges.join(", ")} yrs)` : ""}*\n` +
       `Plan:      *${session.plan}*\n`;
@@ -1099,7 +1112,7 @@ async function confirmAndSave(from, agent, session) {
       `Check-in: ${fmtDate(session.ciDate)}\n` +
       `Check-out: ${fmtDate(session.coDate)}\n` +
       `Nights: ${nights}\n` +
-      `Rooms: ${rooms} x ${typeName}\n` +
+      `Rooms: ${roomsDisplay}\n` +
       `Plan: ${session.plan}\n` +
       `Total: Rs.${Math.round(grandTotal).toLocaleString()}`;
 
@@ -2216,6 +2229,7 @@ async function handleAdminReply(from, text, t) {
         roomTypes: roomTypes.length > 1 ? roomTypes : null,
         plan: plan.toUpperCase(),
         rate: finalRate,
+        grandTotal: Math.round(grandTotal), // pre-calculated total
         nights,
         adults: parsed.adults || rooms * 2,
         kids: 0,
