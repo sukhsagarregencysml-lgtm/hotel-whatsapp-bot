@@ -17,6 +17,8 @@ const optedInGuests = {};
 const guestSessions = {};
 const pendingPayments = {}; // phone -> { agentName, amount, total, remaining, voucherNo, ciDate, coDate }
 const pendingCancellations = {}; // voucherNo -> { agentPhone, agentName, guestName, ciDate, coDate, voucherNo, advancePaid }
+const adminNotifMsgMap = {}; // msgId of admin notification -> agentPhone (for reply-to detection)
+let lastPendingPaymentPhone = null; // phone of last agent who sent payment screenshot
 
 // Hotel info - customize per hotel
 const HOTEL_INFO = {
@@ -57,7 +59,7 @@ async function getAgent(phone) {
   return db.getAgent(phone);
 }
 
-async function handleIncoming({ from, text, msgId, msgType, mediaId }) {
+async function handleIncoming({ from, text, msgId, msgType, mediaId, contextMsgId }) {
   const t = (text || "").trim().toUpperCase();
   console.log(`MSG From ${from}: ${text || "[media]"}`);
 
@@ -73,16 +75,21 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId }) {
         `Pending admin approval. You will be notified once confirmed. 🙏`
       );
       // Notify admin with approve/reject commands
-      await sendReminder(ADMIN_PHONE,
+      const notifResult = await sendReminder(ADMIN_PHONE,
         `📸 *PAYMENT SCREENSHOT RECEIVED*\n\n` +
         `Agent: ${pending.agentName} (${from})\n` +
         `Voucher: ${pending.voucherNo}\n` +
         `Amount: Rs.${pending.amount.toLocaleString()}\n` +
         `Guest: ${pending.guestName}\n` +
         `Check-in: ${fmtDate(pending.ciDate)}\n\n` +
-        `To approve: *APPROVE PAY ${from} ${pending.amount}*\n` +
-        `To reject: *REJECT PAY ${from}*`
+        `Reply *YES* to approve or *NO* to reject\n` +
+        `Or: *APPROVE PAY ${from} ${pending.amount}*`
       );
+      // Store msgId so admin can reply to this specific message
+      if (notifResult?.messages?.[0]?.id) {
+        adminNotifMsgMap[notifResult.messages[0].id] = { agentPhone: from, amount: pending.amount };
+      }
+      lastPendingPaymentPhone = from;
       return;
     }
   }
@@ -111,7 +118,7 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId }) {
 
   // -- ADMIN COMMANDS -----------------------------------------------------
   if (from === ADMIN_PHONE) {
-    await handleAdminReply(from, text, t);
+    await handleAdminReply(from, text, t, contextMsgId);
     return;
   }
 
@@ -1747,19 +1754,42 @@ async function handleGuest(from, text, t) {
   session.step = "menu";
 }
 
-async function handleAdminReply(from, text, t) {
+async function handleAdminReply(from, text, t, contextMsgId) {
   // APPROVE PAY 919XXXXXXXXX 5000
   // Also handle Y/YES/N/NO as quick response to last pending action
-  if (["Y","YES"].includes(t) && Object.keys(pendingCancellations).length > 0) {
-    // Auto approve latest cancellation
-    const latestKey = Object.keys(pendingCancellations).pop();
-    text = `APPROVE CANCEL ${latestKey}`;
-    t = text.toUpperCase();
+
+  // Check if admin replied to a specific payment notification message
+  const repliedPayment = contextMsgId ? adminNotifMsgMap[contextMsgId] : null;
+
+  if (["Y","YES"].includes(t)) {
+    if (repliedPayment) {
+      // Admin replied YES to a specific payment screenshot notification
+      text = `APPROVE PAY ${repliedPayment.agentPhone} ${repliedPayment.amount}`;
+      t = text.toUpperCase();
+    } else if (lastPendingPaymentPhone && pendingPayments[lastPendingPaymentPhone]) {
+      // Admin typed YES — approve most recent payment screenshot
+      const p = pendingPayments[lastPendingPaymentPhone];
+      text = `APPROVE PAY ${lastPendingPaymentPhone} ${p.amount}`;
+      t = text.toUpperCase();
+    } else if (Object.keys(pendingCancellations).length > 0) {
+      // Auto approve latest cancellation
+      const latestKey = Object.keys(pendingCancellations).pop();
+      text = `APPROVE CANCEL ${latestKey}`;
+      t = text.toUpperCase();
+    }
   }
-  if (["N","NO"].includes(t) && Object.keys(pendingCancellations).length > 0) {
-    const latestKey = Object.keys(pendingCancellations).pop();
-    text = `REJECT CANCEL ${latestKey}`;
-    t = text.toUpperCase();
+  if (["N","NO"].includes(t)) {
+    if (repliedPayment) {
+      text = `REJECT PAY ${repliedPayment.agentPhone}`;
+      t = text.toUpperCase();
+    } else if (lastPendingPaymentPhone && pendingPayments[lastPendingPaymentPhone]) {
+      text = `REJECT PAY ${lastPendingPaymentPhone}`;
+      t = text.toUpperCase();
+    } else if (Object.keys(pendingCancellations).length > 0) {
+      const latestKey = Object.keys(pendingCancellations).pop();
+      text = `REJECT CANCEL ${latestKey}`;
+      t = text.toUpperCase();
+    }
   }
 
   // Flexible: "APPROVE 919..." or "APPROVE PAY 919..."
