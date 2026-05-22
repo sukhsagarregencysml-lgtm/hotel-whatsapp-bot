@@ -1792,31 +1792,67 @@ async function handleAdminReply(from, text, t) {
       await sendReminder(agentPhone, agentMsg);
 
       // Send guest voucher (no price) to agent — for forwarding to guest
-      const guestVoucher =
-        `🏨 *HOTEL SUKHSAGAR REGENCY*\n` +
-        `Shimla, Himachal Pradesh\n` +
-        `📞 +91 98160 03322\n` +
-        `━━━━━━━━━━━━━━━━━━━━━\n` +
-        `📋 *GUEST BOOKING VOUCHER*\n` +
-        `━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `Voucher No: *${pending.voucherNo}*\n\n` +
-        `*GUEST DETAILS*\n` +
-        `Name: *${pending.guestName}*\n\n` +
-        `*BOOKING DETAILS*\n` +
-        `Check-in:  *${fmtDate(pending.ciDate)}*\n` +
-        `Check-out: *${fmtDate(pending.coDate)}*\n` +
-        `Nights:    *${Math.round((new Date(pending.coDate)-new Date(pending.ciDate))/86400000)}*\n` +
-        `Rooms:     *${pending.rooms || 1} x ${pending.roomType || "Deluxe"}*\n` +
-        `Plan:      *${pending.plan || "CP"}*\n\n` +
-        `*HOTEL POLICIES*\n` +
-        `Check-in time: 12:00 PM\n` +
-        `Check-out time: 11:00 AM\n` +
-        `Valid ID required at check-in\n\n` +
-        `━━━━━━━━━━━━━━━━━━━━━\n` +
-        `_This voucher is valid for the dates mentioned above._\n` +
-        `_Please carry a valid photo ID at check-in._`;
+      try {
+        const nights2 = Math.round((new Date(pending.coDate)-new Date(pending.ciDate))/86400000);
+        const roomDisplay = pending.roomTypes && pending.roomTypes.length > 1
+          ? pending.roomTypes.map(r => `${r.count} x ${r.type === "honeymoon" ? "Honeymoon" : r.type === "superdeluxe" ? "Super Deluxe" : "Deluxe"}`).join(" + ")
+          : `${pending.rooms || 1} x ${pending.roomType || "Deluxe"}`;
 
-      await sendReminder(agentPhone, `📄 *Guest Voucher* (forward to your guest):\n\n` + guestVoucher);
+        const guestVoucher =
+          `🏨 *HOTEL SUKHSAGAR REGENCY*\n` +
+          `Shimla, Himachal Pradesh\n` +
+          `📞 +91 98160 03322\n` +
+          `━━━━━━━━━━━━━━━━━━━━━\n` +
+          `📋 *GUEST BOOKING VOUCHER*\n` +
+          `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+          `Voucher No: *${pending.voucherNo}*\n` +
+          `Date: *${fmtDate(new Date().toISOString().split("T")[0])}*\n\n` +
+          `*GUEST DETAILS*\n` +
+          `Name: *${pending.guestName}*\n\n` +
+          `*BOOKING DETAILS*\n` +
+          `Check-in:  *${fmtDate(pending.ciDate)}*\n` +
+          `Check-out: *${fmtDate(pending.coDate)}*\n` +
+          `Nights:    *${nights2}*\n` +
+          `Rooms:     *${roomDisplay}*\n` +
+          `Plan:      *${pending.plan || "CP"}*\n\n` +
+          `*HOTEL POLICIES*\n` +
+          `✅ Check-in time: 12:00 PM\n` +
+          `✅ Check-out time: 11:00 AM\n` +
+          `✅ Valid ID required at check-in\n` +
+          `✅ Complementary: WiFi, Parking, Welcome drink\n\n` +
+          `━━━━━━━━━━━━━━━━━━━━━\n` +
+          `_This voucher is valid for the dates mentioned above._\n` +
+          `_Please carry a valid photo ID at check-in._\n\n` +
+          `📍 *How to reach us:*\n` +
+          `Hotel Sukhsagar Regency\n` +
+          `Tara Devi, Shimla - 171010\n` +
+          `Google Maps: https://maps.google.com/?q=31.078199,77.140404`;
+
+        await sendMessage(agentPhone, `📄 *Guest Voucher* (forward to your guest):\n\n` + guestVoucher);
+        console.log("Guest voucher sent to", agentPhone);
+
+        // Send location separately
+        const axios = require("axios");
+        await axios.post(
+          `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
+          {
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: agentPhone,
+            type: "location",
+            location: {
+              longitude: 77.140404,
+              latitude: 31.078199,
+              name: "Hotel Sukhsagar Regency",
+              address: "Tara Devi, Shimla, Himachal Pradesh 171010"
+            }
+          },
+          { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
+        );
+        console.log("Location sent to", agentPhone);
+      } catch(vErr) {
+        console.error("Guest voucher send error:", vErr.message);
+      }
 
       delete pendingPayments[agentPhone];
     } else {
