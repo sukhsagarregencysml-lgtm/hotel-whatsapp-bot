@@ -719,8 +719,8 @@ async function checkAndRespond(from, agent, session) {
         ? session.roomTypes
         : [{ type: session.roomType || "deluxe", count: session.rooms }];
 
-      // Get cumulative tally — skip for guest bookings (BOOK1)
-      const isGuestBooking = session.isGuestBooking || false;
+      // Get cumulative tally — skip for guest bookings (BOOK1) and category "Guest"
+      const isGuestBooking = session.isGuestBooking || agent.category === "Guest" || false;
       const tally = isGuestBooking ? { roomsBooked: 0, freeRoomsUsed: 0 } : await getTally(from);
       const totalRoomsThisBooking = roomTypesList.reduce((s, r) => s + r.count, 0);
       const roomsAfterBooking = isGuestBooking ? 0 : tally.roomsBooked + totalRoomsThisBooking;
@@ -773,10 +773,13 @@ async function checkAndRespond(from, agent, session) {
         rateMsg += `*Total after discount: Rs.${Math.round(grandTotal).toLocaleString()}*\n\n`;
       } else {
         rateMsg += `Total (without extra bed): *Rs.${Math.round(grandTotal).toLocaleString()}*\n`;
-        rateMsg += `📊 FY Tally: ${tally.roomsBooked} rooms booked → ${roomsNeededForNext} more for next FREE room\n\n`;
+        if (!isGuestBooking) {
+          rateMsg += `📊 FY Tally: ${tally.roomsBooked} rooms booked → ${roomsNeededForNext} more for next FREE room\n`;
+        }
+        rateMsg += `\n`;
       }
 
-      if (newFreeRoomsEarned > 0) {
+      if (!isGuestBooking && newFreeRoomsEarned > 0) {
         rateMsg += `🎉 This booking earns you *${newFreeRoomsEarned} FREE room${newFreeRoomsEarned > 1 ? "s" : ""}*!\n\n`;
       }
 
@@ -1603,8 +1606,11 @@ async function handleGuest(from, text, t) {
       const pmsRoomType = session.roomType === "honeymoon" ? "Honeymoon" :
                           session.roomType === "superdeluxe" ? "Super Deluxe" : "Deluxe";
 
-      const extraPerson = 500;
-      const childNoBed = 300;
+      // Use correct customer extra charges from rates.js (plan-dependent)
+      const isMapPlan = ["MAP","MAPAI"].includes((session.plan || "").toUpperCase());
+      const extraPerson = isMapPlan ? CUSTOMER_EXTRAS.mapaicwb : CUSTOMER_EXTRAS.cpaicwb;
+      const childNoBedAbove5 = CUSTOMER_EXTRAS.cnbAbove5;
+      const childNoBedBelow5 = CUSTOMER_EXTRAS.cnbBelow5;
       await sendMessage(from,
         `✅ *Rooms Available!*\n\n` +
         `📅 Check-in:  *${fmtDate(session.ciDate)}*\n` +
@@ -1613,7 +1619,10 @@ async function handleGuest(from, text, t) {
         `🛏 Room:      *${session.rooms} x ${pmsRoomType}*\n` +
         `🍽 Plan:      *${session.plan}*\n` +
         `💰 Rate:      *Rs.${rateInfo.rate.toLocaleString()}/night*\n` +
-        `👤 Extra person: *Rs.${extraPerson}/night*\n` +
+        `👤 Extra person (above 10 yrs): *Rs.${CUSTOMER_EXTRAS.extraPerson}/night*\n` +
+        `🧒 Child with bed: *Rs.${extraPerson}/night*\n` +
+        `🧒 Child no bed (above 5 yrs): *Rs.${childNoBedAbove5}/night*\n` +
+        `🧒 Child no bed (below 5 yrs): *Rs.${childNoBedBelow5}/night*\n` +
         `💳 Total:     *Rs.${grandTotal.toLocaleString()}*\n\n` +
         `To confirm booking reply *YES*\n` +
         `To change dates reply *NO*\n` +
