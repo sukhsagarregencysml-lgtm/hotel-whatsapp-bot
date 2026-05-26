@@ -1,6 +1,6 @@
 "use strict";
 const { parseEnquiry } = require("./parser");
-const { getTally, updateTally, useFreeRooms, getAllAgents } = require("./agents");
+const { getTally, updateTally, useFreeRooms, getAllAgents, initBlastSheet, loadBlastQueue, markBlastSent, markBlastFailed, resetFailedToPending, clearBlastSheet } = require("./agents");
 const { checkAvailability, saveReservation, cancelReservation } = require("./stayezee");
 const { getRate, getCustomerRate, CUSTOMER_EXTRAS } = require("./rates");
 const {
@@ -1784,88 +1784,101 @@ async function handleGuest(from, text, t) {
   session.step = "menu";
 }
 
-// ── BLAST BATCH RUNNER — sends up to 50 messages, retries failed ones ───────
+// ── BLAST BATCH RUNNER — sheet-backed, survives restarts ─────────────────
 async function runBlastBatch(adminPhone) {
-  if (!blastQueue.message) return;
-
   // Only send between 9 AM and 5 PM IST
   const nowIST = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
   const hour = nowIST.getHours();
   if (hour < 9 || hour >= 17) {
-    console.log(`Blast: outside sending hours (${hour}:00 IST). Will retry at 10 AM.`);
-    if (adminPhone && blastQueue.todaySent === 0) {
-      // Only notify if nothing sent today yet
-    }
+    console.log(`Blast: outside sending hours (${hour}:00 IST).`);
     return;
   }
 
-  // Reset daily counter if it's a new day
+  // Load current state from sheet (survives server restarts)
+  const queueData = await loadBlastQueue();
+  if (!queueData || !queueData.message) {
+    blastQueue.message = null;
+    return;
+  }
+
+  // Sync in-memory state from sheet
+  blastQueue.message = queueData.message;
+  blastQueue.sentCount = queueData.sentCount;
+
+  // Reset daily counter if new day — move failed back to pending
   const today = new Date().toISOString().split("T")[0];
   if (blastQueue.lastResetDate !== today) {
     blastQueue.todaySent = 0;
     blastQueue.lastResetDate = today;
-    // Move failed numbers back to pending for retry
-    if (blastQueue.failed.length > 0) {
-      console.log(`♻️ Blast: retrying ${blastQueue.failed.length} failed numbers`);
-      blastQueue.pending = [...blastQueue.failed, ...blastQueue.pending];
-      blastQueue.failed = [];
+    if (queueData.failed.length > 0) {
+      await resetFailedToPending();
+      // Reload after reset
+      const refreshed = await loadBlastQueue();
+      queueData.pending = refreshed?.pending || queueData.pending;
+      queueData.failed = [];
     }
   }
 
   const DAILY_LIMIT = 50;
-  const PER_RUN_LIMIT = 7; // ~7 per hour x 8 hours = ~50/day, spread naturally
+  const PER_RUN_LIMIT = 7;
   const remaining = Math.min(PER_RUN_LIMIT, DAILY_LIMIT - blastQueue.todaySent);
   if (remaining <= 0) {
     console.log(`Blast: daily limit reached (${blastQueue.todaySent}/${DAILY_LIMIT})`);
     return;
   }
 
-  // Take up to `remaining` numbers from pending
-  const batch = blastQueue.pending.splice(0, remaining);
-  if (batch.length === 0) {
-    // All done!
-    if (blastQueue.failed.length === 0) {
-      blastQueue.message = null;
-      if (adminPhone) {
-        await sendMessage(adminPhone,
-          `🎉 *Blast Campaign Complete!*\n\n` +
-          `✅ Total sent: *${blastQueue.sentCount}*\n` +
-          `All messages delivered successfully.`
-        );
-      }
+  // Get pending phones (from sheet)
+  const allPending = queueData.pending;
+  if (allPending.length === 0 && queueData.failed.length === 0) {
+    // Campaign complete!
+    blastQueue.message = null;
+    await clearBlastSheet();
+    if (adminPhone) {
+      await sendMessage(adminPhone,
+        `🎉 *Blast Campaign Complete!*\n\n` +
+        `✅ Total sent: *${blastQueue.sentCount}*\n` +
+        `All messages delivered successfully! 🙏`
+      );
     }
     return;
   }
 
-  let batchSent = 0, batchFailed = 0;
+  const batch = allPending.slice(0, remaining);
+  if (batch.length === 0) return;
+
+  const sentPhones = [], failedPhones = [];
+
   for (const phone of batch) {
     try {
       await sendMessage(phone, blastQueue.message);
+      sentPhones.push(phone);
       blastQueue.sentCount++;
       blastQueue.todaySent++;
-      batchSent++;
-      // 1.2 sec gap between messages to stay safe
       await new Promise(r => setTimeout(r, 1200));
     } catch (err) {
       console.error(`Blast failed for ${phone}:`, err.message);
-      blastQueue.failed.push(phone); // retry tomorrow
-      batchFailed++;
+      failedPhones.push(phone);
     }
   }
 
-  console.log(`✓ Blast batch: ${batchSent} sent, ${batchFailed} failed. Pending: ${blastQueue.pending.length}`);
+  // Update sheet in bulk
+  if (sentPhones.length > 0) await markBlastSent(sentPhones);
+  if (failedPhones.length > 0) await markBlastFailed(failedPhones);
 
-  // Notify admin of batch result
+  const pendingLeft = allPending.length - batch.length;
+  const daysLeft = Math.ceil(pendingLeft / 50);
+
+  console.log(`✓ Blast: ${sentPhones.length} sent, ${failedPhones.length} failed. ${pendingLeft} remaining.`);
+
   if (adminPhone) {
-    const pendingLeft = blastQueue.pending.length;
-    const daysLeft = Math.ceil(pendingLeft / 50);
     await sendMessage(adminPhone,
       `📊 *Blast Update*\n\n` +
       `✅ Sent today: *${blastQueue.todaySent}/50*\n` +
       `📨 Total sent: *${blastQueue.sentCount}*\n` +
-      (batchFailed > 0 ? `❌ Failed (retry tomorrow): *${blastQueue.failed.length}*\n` : ``) +
+      (failedPhones.length > 0 ? `❌ Failed (retry tomorrow): *${failedPhones.length}*\n` : ``) +
       `⏳ Remaining: *${pendingLeft}*\n` +
-      (pendingLeft > 0 ? `📅 Est. *${daysLeft} more day${daysLeft > 1 ? "s" : ""}* to complete` : `🎉 All sent!`)
+      (pendingLeft > 0 ? `📅 Est. *${daysLeft} more day${daysLeft > 1 ? "s" : ""}* to complete\n\n` : `🎉 Last batch done!\n\n`) +
+      `_Check full list: open BlastQueue sheet_`
     );
   }
 }
@@ -2212,18 +2225,21 @@ async function handleAdminReply(from, text, t, contextMsgId) {
 
     // BLAST STATUS
     if (subCmd.toUpperCase() === "STATUS") {
-      if (!blastQueue.message) {
+      const qData = await loadBlastQueue();
+      if (!qData || !qData.message) {
         await sendMessage(from, `📭 No active blast campaign.\n\nStart one with:\n*BLAST Your message here*`);
       } else {
-        const total = blastQueue.pending.length + blastQueue.failed.length + blastQueue.sentCount;
+        const total = qData.pending.length + qData.failed.length + qData.sentCount;
+        const daysLeft = Math.ceil(qData.pending.length / 50);
         await sendMessage(from,
           `📊 *Blast Campaign Status*\n\n` +
-          `📨 Sent today: *${blastQueue.todaySent}*\n` +
-          `✅ Total sent: *${blastQueue.sentCount}*\n` +
-          `⏳ Pending: *${blastQueue.pending.length}*\n` +
-          `❌ Failed (retry tomorrow): *${blastQueue.failed.length}*\n` +
-          `👥 Total: *${total}*\n\n` +
-          `📝 Message:\n_${blastQueue.message}_\n\n` +
+          `✅ Total sent: *${qData.sentCount}*\n` +
+          `⏳ Pending: *${qData.pending.length}*\n` +
+          `❌ Failed (retry tomorrow): *${qData.failed.length}*\n` +
+          `👥 Total numbers: *${total}*\n` +
+          `📅 Est. *${daysLeft} day${daysLeft !== 1 ? "s" : ""}* remaining\n\n` +
+          `📝 Message:\n_${qData.message}_\n\n` +
+          `📊 Full details: open *BlastQueue* sheet in Google Sheets\n` +
           `To stop: *BLAST STOP*`
         );
       }
@@ -2235,14 +2251,19 @@ async function handleAdminReply(from, text, t, contextMsgId) {
       if (!blastQueue.message) {
         await sendMessage(from, `No active blast campaign to stop.`);
       } else {
-        const stopped = blastQueue.pending.length;
+        const qData = await loadBlastQueue();
+        const stopped = qData?.pending?.length || 0;
         blastQueue.message = null;
-        blastQueue.pending = [];
-        blastQueue.failed = [];
         blastQueue.sentCount = 0;
         blastQueue.todaySent = 0;
         blastQueue.lastResetDate = null;
-        await sendMessage(from, `🛑 *Blast stopped.*\n\n${stopped} remaining numbers cancelled.`);
+        await clearBlastSheet();
+        await sendMessage(from,
+          `🛑 *Blast Stopped.*\n\n` +
+          `📨 Already sent: *${qData?.sentCount || 0}*\n` +
+          `❌ Cancelled: *${stopped}* remaining numbers\n\n` +
+          `BlastQueue sheet has been cleared.`
+        );
       }
       return;
     }
@@ -2277,10 +2298,13 @@ async function handleAdminReply(from, text, t, contextMsgId) {
       return;
     }
 
-    // Load queue with all agent phones
+    // Save all numbers to Google Sheet
+    const phones = agents.map(a => a.phone);
+    await sendMessage(from, `⏳ Setting up blast campaign for *${agents.length}* agents...`);
+    await initBlastSheet(phones, blastMsg);
+
+    // Set in-memory state
     blastQueue.message = blastMsg;
-    blastQueue.pending = agents.map(a => a.phone);
-    blastQueue.failed = [];
     blastQueue.sentCount = 0;
     blastQueue.todaySent = 0;
     blastQueue.lastResetDate = new Date().toISOString().split("T")[0];
@@ -2291,7 +2315,9 @@ async function handleAdminReply(from, text, t, contextMsgId) {
       `📅 Rate: *50 messages/day*\n` +
       `⏱ Est. completion: *${Math.ceil(agents.length / 50)} days*\n\n` +
       `📝 Message:\n_${blastMsg}_\n\n` +
-      `First 50 will be sent now. Check progress with *BLAST STATUS*`
+      `📊 Track live progress in *BlastQueue* sheet\n` +
+      `First batch sending now between 9AM-5PM IST.\n\n` +
+      `Check progress: *BLAST STATUS*`
     );
 
     // Trigger first batch immediately

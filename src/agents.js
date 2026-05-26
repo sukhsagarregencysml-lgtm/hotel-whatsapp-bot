@@ -210,4 +210,189 @@ async function useFreeRooms(phone, agentName, count) {
   }
 }
 
-module.exports = { isAgent, getAgent, addAgent, removeAgent, listAgents, getAllAgents, getTally, updateTally, useFreeRooms, getFinancialYear };
+
+// ── BLAST QUEUE SHEET ─────────────────────────────────────────────────────
+const BLAST_SHEET = "BlastQueue";
+
+async function initBlastSheet(phones, message) {
+  try {
+    const auth = getAuth();
+    const sheets = google.sheets({ version: "v4", auth });
+
+    // Clear existing data first
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId: SHEET_ID,
+      range: `${BLAST_SHEET}!A:F`,
+    });
+
+    // Write header + all numbers as pending
+    const header = [["Phone", "Status", "SentOn", "Retries", "Message", "AddedOn"]];
+    const today = new Date().toLocaleDateString("en-IN");
+    const rows = phones.map(p => [p, "pending", "", "0", message, today]);
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `${BLAST_SHEET}!A1`,
+      valueInputOption: "RAW",
+      requestBody: { values: [...header, ...rows] },
+    });
+
+    console.log(`✓ BlastQueue sheet initialized with ${phones.length} numbers`);
+    return true;
+  } catch (err) {
+    console.error("initBlastSheet error:", err.message);
+    return false;
+  }
+}
+
+async function loadBlastQueue() {
+  try {
+    const auth = getAuth();
+    const sheets = google.sheets({ version: "v4", auth });
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `${BLAST_SHEET}!A:F`,
+    });
+    const rows = res.data.values || [];
+    if (rows.length <= 1) return null; // empty or header only
+
+    const message = rows[1]?.[4] || null;
+    const pending = [], failed = [], sent = [];
+
+    rows.slice(1).forEach(r => {
+      const phone = r[0]?.trim();
+      const status = r[1]?.trim();
+      if (!phone) return;
+      if (status === "pending") pending.push(phone);
+      else if (status === "failed") failed.push({ phone, retries: parseInt(r[3] || 0) });
+      else if (status === "sent") sent.push(phone);
+    });
+
+    return { message, pending, failed, sentCount: sent.length };
+  } catch (err) {
+    console.error("loadBlastQueue error:", err.message);
+    return null;
+  }
+}
+
+async function markBlastSent(phones) {
+  try {
+    const auth = getAuth();
+    const sheets = google.sheets({ version: "v4", auth });
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `${BLAST_SHEET}!A:F`,
+    });
+    const rows = res.data.values || [];
+    const today = new Date().toLocaleDateString("en-IN");
+
+    const updates = [];
+    phones.forEach(phone => {
+      const idx = rows.findIndex((r, i) => i > 0 && r[0]?.trim() === phone);
+      if (idx >= 0) {
+        updates.push({
+          range: `${BLAST_SHEET}!B${idx + 1}:C${idx + 1}`,
+          values: [["sent", today]],
+        });
+      }
+    });
+
+    if (updates.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: SHEET_ID,
+        requestBody: { valueInputOption: "RAW", data: updates },
+      });
+    }
+    return true;
+  } catch (err) {
+    console.error("markBlastSent error:", err.message);
+    return false;
+  }
+}
+
+async function markBlastFailed(phones) {
+  try {
+    const auth = getAuth();
+    const sheets = google.sheets({ version: "v4", auth });
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `${BLAST_SHEET}!A:F`,
+    });
+    const rows = res.data.values || [];
+
+    const updates = [];
+    phones.forEach(phone => {
+      const idx = rows.findIndex((r, i) => i > 0 && r[0]?.trim() === phone);
+      if (idx >= 0) {
+        const retries = parseInt(rows[idx][3] || 0) + 1;
+        updates.push({
+          range: `${BLAST_SHEET}!B${idx + 1}:D${idx + 1}`,
+          values: [["failed", "", String(retries)]],
+        });
+      }
+    });
+
+    if (updates.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: SHEET_ID,
+        requestBody: { valueInputOption: "RAW", data: updates },
+      });
+    }
+    return true;
+  } catch (err) {
+    console.error("markBlastFailed error:", err.message);
+    return false;
+  }
+}
+
+async function resetFailedToPending() {
+  try {
+    const auth = getAuth();
+    const sheets = google.sheets({ version: "v4", auth });
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: `${BLAST_SHEET}!A:F`,
+    });
+    const rows = res.data.values || [];
+
+    const updates = [];
+    rows.forEach((r, i) => {
+      if (i === 0) return;
+      if (r[1]?.trim() === "failed") {
+        updates.push({
+          range: `${BLAST_SHEET}!B${i + 1}`,
+          values: [["pending"]],
+        });
+      }
+    });
+
+    if (updates.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: SHEET_ID,
+        requestBody: { valueInputOption: "RAW", data: updates },
+      });
+    }
+    console.log(`♻️ Reset ${updates.length} failed numbers to pending`);
+    return true;
+  } catch (err) {
+    console.error("resetFailedToPending error:", err.message);
+    return false;
+  }
+}
+
+async function clearBlastSheet() {
+  try {
+    const auth = getAuth();
+    const sheets = google.sheets({ version: "v4", auth });
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId: SHEET_ID,
+      range: `${BLAST_SHEET}!A:F`,
+    });
+    return true;
+  } catch (err) {
+    console.error("clearBlastSheet error:", err.message);
+    return false;
+  }
+}
+
+module.exports = { isAgent, getAgent, addAgent, removeAgent, listAgents, getAllAgents, getTally, updateTally, useFreeRooms, getFinancialYear, initBlastSheet, loadBlastQueue, markBlastSent, markBlastFailed, resetFailedToPending, clearBlastSheet };
