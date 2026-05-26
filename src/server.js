@@ -32,6 +32,7 @@ app.post("/webhook", async (req, res) => {
 
     let text = "";
     let mediaId = null;
+    const contextMsgId = msg.context?.id || null; // ID of message admin replied to
 
     if (msgType === "text") {
       text = msg.text?.body || "";
@@ -43,7 +44,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     console.log(`📨 From ${from} [${msgType}]: ${text}`);
-    await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId });
+    await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId, contextMsgId });
   } catch (err) {
     console.error("Webhook error:", err.message);
   }
@@ -92,21 +93,27 @@ app.post("/send-optin", async (req, res) => {
 
 // -- POST /send-checkin -- called by PMS on check-in ---------------
 app.post("/send-checkin", async (req, res) => {
+  // Optional API key auth — set STAYEZEE_API_KEY in .env to enable
+  const apiKey = process.env.STAYEZEE_API_KEY;
+  if (apiKey && req.headers["x-api-key"] !== apiKey) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
   try {
     const { phone, guestName, hotelName, room, checkout, plan, wifi } = req.body;
+    if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName are required" });
     const { sendMessage } = require("./whatsapp");
 
     const msg =
-      `Welcome to ${hotelName}! 🏨\n\n` +
-      `Dear ${guestName},\n\n` +
-      `You are now checked in. Here are your details:\n\n` +
-      `Room: ${room}\n` +
-      `Check-out: ${checkout}\n` +
-      `Plan: ${plan}\n` +
-      `WiFi: ${wifi}\n\n` +
-      `For assistance please call reception.\n\n` +
-      `We wish you a wonderful stay!\n` +
-      `Team ${hotelName}`;
+      `🏨 *Welcome to ${hotelName}!*\n\n` +
+      `Dear *${guestName}*,\n\n` +
+      `You are now successfully checked in. Here are your stay details:\n\n` +
+      `🛏 *Room:* ${room}\n` +
+      `📅 *Check-out:* ${checkout}\n` +
+      `🍽 *Meal Plan:* ${plan}\n` +
+      `📶 *WiFi Password:* ${wifi}\n\n` +
+      `📞 For any assistance, please call reception or reply to this message.\n\n` +
+      `We wish you a wonderful and comfortable stay! 🙏\n` +
+      `*Team ${hotelName}*`;
 
     await sendMessage(phone, msg);
     res.json({ success: true, message: "Check-in message sent to " + phone });
@@ -117,19 +124,29 @@ app.post("/send-checkin", async (req, res) => {
 
 // -- POST /send-checkout -- called by PMS on checkout ---------------
 app.post("/send-checkout", async (req, res) => {
+  // Optional API key auth — set STAYEZEE_API_KEY in .env to enable
+  const apiKey = process.env.STAYEZEE_API_KEY;
+  if (apiKey && req.headers["x-api-key"] !== apiKey) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
   try {
     const { phone, guestName, hotelName, roomCharges, gst, total, reviewLink } = req.body;
+    if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName are required" });
     const { sendMessage } = require("./whatsapp");
 
     const msg =
-      `Dear ${guestName},\n\n` +
-      `Thank you for staying at ${hotelName}! 🙏\n\n` +
-      `Your bill summary:\n` +
-      `Room charges: Rs.${roomCharges}\n` +
-      `GST: Rs.${gst}\n` +
-      `Total: Rs.${total}\n\n` +
-      `We hope to see you again!\n\n` +
-      (reviewLink ? `Please share your experience:\n${reviewLink}` : "");
+      `🙏 *Thank You for Staying with Us!*\n\n` +
+      `Dear *${guestName}*,\n\n` +
+      `It was a pleasure having you at *${hotelName}*. We hope you had a wonderful stay!\n\n` +
+      `📋 *Final Bill Summary*\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `🏷 Room Charges: Rs.${Number(roomCharges).toLocaleString('en-IN')}\n` +
+      `📊 GST: Rs.${Number(gst).toLocaleString('en-IN')}\n` +
+      `💰 *Total Paid: Rs.${Number(total).toLocaleString('en-IN')}*\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `We look forward to welcoming you again! 😊\n\n` +
+      (reviewLink ? `⭐ Loved your stay? Please share your experience:\n${reviewLink}\n\n` : "") +
+      `*Team ${hotelName}*`;
 
     await sendMessage(phone, msg);
     res.json({ success: true, message: "Checkout message sent to " + phone });
@@ -209,6 +226,24 @@ cron.schedule("0 9 * * *", async () => {
 }, { timezone: "Asia/Kolkata" });
 
 console.log("⏰ Daily payment reminder cron scheduled at 9 AM IST");
+
+// ── DAILY BLAST BATCH — runs every day at 10 AM IST ──────────────────────
+cron.schedule("0 10 * * *", async () => {
+  try {
+    const { blastQueue, runBlastBatch } = require("./handler");
+    if (!blastQueue || !blastQueue.message) {
+      console.log("Blast cron: no active campaign");
+      return;
+    }
+    console.log(`⏰ Blast cron: running daily batch. Pending: ${blastQueue.pending.length}, Failed: ${blastQueue.failed.length}`);
+    const ADMIN_PHONE = process.env.ADMIN_PHONE || "919816003322";
+    await runBlastBatch(ADMIN_PHONE);
+  } catch (err) {
+    console.error("Blast cron error:", err.message);
+  }
+}, { timezone: "Asia/Kolkata" });
+
+console.log("⏰ Daily blast batch cron scheduled at 10 AM IST");
 
 // ── AC STATUS REMINDER — every 2 hours ────────────────────────
 const axios = require("axios");
