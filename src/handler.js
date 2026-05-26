@@ -20,6 +20,16 @@ const pendingCancellations = {}; // voucherNo -> { agentPhone, agentName, guestN
 const adminNotifMsgMap = {}; // msgId of admin notification -> agentPhone (for reply-to detection)
 let lastPendingPaymentPhone = null; // phone of last agent who sent payment screenshot
 
+// ── BLAST QUEUE — persists in memory, 50/day with retry ──────────────────
+const blastQueue = {
+  message: null,        // current blast message
+  pending: [],          // phones yet to be sent
+  failed: [],           // phones that failed — retry next day
+  sentCount: 0,         // total sent so far
+  todaySent: 0,         // sent today (resets at midnight)
+  lastResetDate: null,  // date of last daily reset
+};
+
 // Hotel info - customize per hotel
 const HOTEL_INFO = {
   name: process.env.HOTEL_NAME || "Hotel Sukhsagar Regency",
@@ -1774,6 +1784,79 @@ async function handleGuest(from, text, t) {
   session.step = "menu";
 }
 
+// ── BLAST BATCH RUNNER — sends up to 50 messages, retries failed ones ───────
+async function runBlastBatch(adminPhone) {
+  if (!blastQueue.message) return;
+
+  // Reset daily counter if it's a new day
+  const today = new Date().toISOString().split("T")[0];
+  if (blastQueue.lastResetDate !== today) {
+    blastQueue.todaySent = 0;
+    blastQueue.lastResetDate = today;
+    // Move failed numbers back to pending for retry
+    if (blastQueue.failed.length > 0) {
+      console.log(`♻️ Blast: retrying ${blastQueue.failed.length} failed numbers`);
+      blastQueue.pending = [...blastQueue.failed, ...blastQueue.pending];
+      blastQueue.failed = [];
+    }
+  }
+
+  const remaining = 50 - blastQueue.todaySent;
+  if (remaining <= 0) {
+    console.log(`Blast: daily limit reached (${blastQueue.todaySent}/50)`);
+    return;
+  }
+
+  // Take up to `remaining` numbers from pending
+  const batch = blastQueue.pending.splice(0, remaining);
+  if (batch.length === 0) {
+    // All done!
+    if (blastQueue.failed.length === 0) {
+      blastQueue.message = null;
+      if (adminPhone) {
+        await sendMessage(adminPhone,
+          `🎉 *Blast Campaign Complete!*\n\n` +
+          `✅ Total sent: *${blastQueue.sentCount}*\n` +
+          `All messages delivered successfully.`
+        );
+      }
+    }
+    return;
+  }
+
+  let batchSent = 0, batchFailed = 0;
+  for (const phone of batch) {
+    try {
+      await sendMessage(phone, blastQueue.message);
+      blastQueue.sentCount++;
+      blastQueue.todaySent++;
+      batchSent++;
+      // 1.2 sec gap between messages to stay safe
+      await new Promise(r => setTimeout(r, 1200));
+    } catch (err) {
+      console.error(`Blast failed for ${phone}:`, err.message);
+      blastQueue.failed.push(phone); // retry tomorrow
+      batchFailed++;
+    }
+  }
+
+  console.log(`✓ Blast batch: ${batchSent} sent, ${batchFailed} failed. Pending: ${blastQueue.pending.length}`);
+
+  // Notify admin of batch result
+  if (adminPhone) {
+    const pendingLeft = blastQueue.pending.length;
+    const daysLeft = Math.ceil(pendingLeft / 50);
+    await sendMessage(adminPhone,
+      `📊 *Blast Update*\n\n` +
+      `✅ Sent today: *${blastQueue.todaySent}/50*\n` +
+      `📨 Total sent: *${blastQueue.sentCount}*\n` +
+      (batchFailed > 0 ? `❌ Failed (retry tomorrow): *${blastQueue.failed.length}*\n` : ``) +
+      `⏳ Remaining: *${pendingLeft}*\n` +
+      (pendingLeft > 0 ? `📅 Est. *${daysLeft} more day${daysLeft > 1 ? "s" : ""}* to complete` : `🎉 All sent!`)
+    );
+  }
+}
+
 async function handleAdminReply(from, text, t, contextMsgId) {
   // APPROVE PAY 919XXXXXXXXX 5000
   // Also handle Y/YES/N/NO as quick response to last pending action
@@ -2108,6 +2191,101 @@ async function handleAdminReply(from, text, t, contextMsgId) {
     return;
   }
 
+  // BLAST <message> — queue message to all agents, 50/day with auto-retry
+  // BLAST STATUS — check current blast queue status
+  // BLAST STOP — stop current blast campaign
+  if (t.startsWith("BLAST")) {
+    const subCmd = text.slice(5).trim();
+
+    // BLAST STATUS
+    if (subCmd.toUpperCase() === "STATUS") {
+      if (!blastQueue.message) {
+        await sendMessage(from, `📭 No active blast campaign.\n\nStart one with:\n*BLAST Your message here*`);
+      } else {
+        const total = blastQueue.pending.length + blastQueue.failed.length + blastQueue.sentCount;
+        await sendMessage(from,
+          `📊 *Blast Campaign Status*\n\n` +
+          `📨 Sent today: *${blastQueue.todaySent}*\n` +
+          `✅ Total sent: *${blastQueue.sentCount}*\n` +
+          `⏳ Pending: *${blastQueue.pending.length}*\n` +
+          `❌ Failed (retry tomorrow): *${blastQueue.failed.length}*\n` +
+          `👥 Total: *${total}*\n\n` +
+          `📝 Message:\n_${blastQueue.message}_\n\n` +
+          `To stop: *BLAST STOP*`
+        );
+      }
+      return;
+    }
+
+    // BLAST STOP
+    if (subCmd.toUpperCase() === "STOP") {
+      if (!blastQueue.message) {
+        await sendMessage(from, `No active blast campaign to stop.`);
+      } else {
+        const stopped = blastQueue.pending.length;
+        blastQueue.message = null;
+        blastQueue.pending = [];
+        blastQueue.failed = [];
+        blastQueue.sentCount = 0;
+        blastQueue.todaySent = 0;
+        blastQueue.lastResetDate = null;
+        await sendMessage(from, `🛑 *Blast stopped.*\n\n${stopped} remaining numbers cancelled.`);
+      }
+      return;
+    }
+
+    // BLAST <message> — start new campaign
+    const blastMsg = subCmd;
+    if (!blastMsg) {
+      await sendMessage(from,
+        `❌ Please include a message after BLAST.\n\n` +
+        `Example:\n` +
+        `*BLAST Hi everyone! Shimla season is here 🏔️ Book your rooms at Hotel Sukhsagar Regency now. Reply BOOK to get started!*\n\n` +
+        `Other commands:\n` +
+        `*BLAST STATUS* — check progress\n` +
+        `*BLAST STOP* — stop campaign`
+      );
+      return;
+    }
+
+    if (blastQueue.message) {
+      await sendMessage(from,
+        `⚠️ A blast campaign is already running!\n\n` +
+        `⏳ Pending: ${blastQueue.pending.length} numbers\n\n` +
+        `Type *BLAST STOP* to stop it first, then start a new one.\n` +
+        `Or *BLAST STATUS* to check progress.`
+      );
+      return;
+    }
+
+    const agents = await getAllAgents();
+    if (agents.length === 0) {
+      await sendMessage(from, `❌ No agents found in the list.`);
+      return;
+    }
+
+    // Load queue with all agent phones
+    blastQueue.message = blastMsg;
+    blastQueue.pending = agents.map(a => a.phone);
+    blastQueue.failed = [];
+    blastQueue.sentCount = 0;
+    blastQueue.todaySent = 0;
+    blastQueue.lastResetDate = new Date().toISOString().split("T")[0];
+
+    await sendMessage(from,
+      `✅ *Blast Campaign Started!*\n\n` +
+      `👥 Total agents: *${agents.length}*\n` +
+      `📅 Rate: *50 messages/day*\n` +
+      `⏱ Est. completion: *${Math.ceil(agents.length / 50)} days*\n\n` +
+      `📝 Message:\n_${blastMsg}_\n\n` +
+      `First 50 will be sent now. Check progress with *BLAST STATUS*`
+    );
+
+    // Trigger first batch immediately
+    await runBlastBatch(from);
+    return;
+  }
+
   // LIST PAY — show all pending payments
   if (t === "LIST PAY") {
     const keys = Object.keys(pendingPayments);
@@ -2384,7 +2562,10 @@ async function handleAdminReply(from, text, t, contextMsgId) {
     `LIST PAY\n` +
     `ADD AGENT 91XXXXXXXXXX Name A/B/C\n` +
     `REMOVE AGENT 91XXXXXXXXXX\n` +
-    `LIST AGENTS`
+    `LIST AGENTS\n` +
+    `\n` +
+    `*Broadcast:*\n` +
+    `BLAST Your message here`
   );
 }
 
@@ -2409,4 +2590,4 @@ async function safeHandleIncoming(args) {
   }
 }
 
-module.exports = { handleIncoming: safeHandleIncoming, pendingOptIns, optedInGuests, pendingPayments, pendingCancellations };
+module.exports = { handleIncoming: safeHandleIncoming, pendingOptIns, optedInGuests, pendingPayments, pendingCancellations, blastQueue, runBlastBatch };
