@@ -227,15 +227,13 @@ cron.schedule("0 9 * * *", async () => {
 
 console.log("⏰ Daily payment reminder cron scheduled at 9 AM IST");
 
-// ── DAILY BLAST BATCH — runs every day at 10 AM IST ──────────────────────
-cron.schedule("0 10 * * *", async () => {
+// ── DAILY BLAST BATCH — runs every hour 9AM to 5PM IST ───────────────────
+// Spreads 50 messages through the day naturally (not all at once)
+cron.schedule("0 9,10,11,12,13,14,15,16 * * *", async () => {
   try {
     const { blastQueue, runBlastBatch } = require("./handler");
-    if (!blastQueue || !blastQueue.message) {
-      console.log("Blast cron: no active campaign");
-      return;
-    }
-    console.log(`⏰ Blast cron: running daily batch. Pending: ${blastQueue.pending.length}, Failed: ${blastQueue.failed.length}`);
+    if (!blastQueue || !blastQueue.message) return;
+    console.log(`⏰ Blast cron: running batch. Pending: ${blastQueue.pending.length}`);
     const ADMIN_PHONE = process.env.ADMIN_PHONE || "919816003322";
     await runBlastBatch(ADMIN_PHONE);
   } catch (err) {
@@ -243,7 +241,7 @@ cron.schedule("0 10 * * *", async () => {
   }
 }, { timezone: "Asia/Kolkata" });
 
-console.log("⏰ Daily blast batch cron scheduled at 10 AM IST");
+console.log("⏰ Blast cron scheduled hourly 9AM-5PM IST (50/day max)");
 
 // ── AC STATUS REMINDER — every 2 hours ────────────────────────
 const axios = require("axios");
