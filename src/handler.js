@@ -890,6 +890,16 @@ async function checkAndRespond(from, agent, session) {
         `Rooms: *${session.rooms}*\n\n` +
         `Please try different dates or room types. 🙏`
       );
+      // Notify admin about the unavailability
+      await sendReminder(ADMIN_PHONE,
+        `🚫 *ROOMS NOT AVAILABLE*\n\n` +
+        `Agent: *${agent.name}* (${from}) [Cat ${agent.category}]\n` +
+        `📅 Check-in: *${fmtDate(session.ciDate)}*\n` +
+        `📅 Check-out: *${fmtDate(session.coDate)}*\n` +
+        `🛏 Rooms: *${session.rooms} x ${session.roomType || "Deluxe"}*\n` +
+        `🍽 Plan: *${session.plan || "—"}*\n\n` +
+        `Agent was informed to try different dates.`
+      );
     }
   } catch (err) {
     console.error("checkAndRespond error:", err.message);
@@ -1593,6 +1603,16 @@ async function handleGuest(from, text, t) {
         await sendMessage(from,
           `Sorry, rooms are not available for selected dates.\n\n` +
           `Please try different dates or contact us:\n📞 *${HOTEL_INFO.phone}*`
+        );
+        // Notify admin about guest unavailability query
+        await sendReminder(ADMIN_PHONE,
+          `🚫 *ROOMS NOT AVAILABLE (GUEST)*\n\n` +
+          `Guest: *${from}*\n` +
+          `📅 Check-in: *${fmtDate(session.ciDate)}*\n` +
+          `📅 Check-out: *${fmtDate(session.coDate)}*\n` +
+          `🛏 Rooms: *${session.rooms} x ${session.roomType || "Deluxe"}*\n` +
+          `🍽 Plan: *${session.plan || "—"}*\n\n` +
+          `Guest was asked to try different dates or call hotel.`
         );
         session.step = "enquiry";
         return;
