@@ -1,6 +1,6 @@
 "use strict";
 const { parseEnquiry } = require("./parser");
-const { getTally, updateTally, useFreeRooms } = require("./agents");
+const { getTally, updateTally, useFreeRooms, getAllAgents } = require("./agents");
 const { checkAvailability, saveReservation, cancelReservation } = require("./stayezee");
 const { getRate, getCustomerRate, CUSTOMER_EXTRAS } = require("./rates");
 const {
