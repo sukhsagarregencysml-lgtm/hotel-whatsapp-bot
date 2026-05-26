@@ -1788,6 +1788,17 @@ async function handleGuest(from, text, t) {
 async function runBlastBatch(adminPhone) {
   if (!blastQueue.message) return;
 
+  // Only send between 9 AM and 5 PM IST
+  const nowIST = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  const hour = nowIST.getHours();
+  if (hour < 9 || hour >= 17) {
+    console.log(`Blast: outside sending hours (${hour}:00 IST). Will retry at 10 AM.`);
+    if (adminPhone && blastQueue.todaySent === 0) {
+      // Only notify if nothing sent today yet
+    }
+    return;
+  }
+
   // Reset daily counter if it's a new day
   const today = new Date().toISOString().split("T")[0];
   if (blastQueue.lastResetDate !== today) {
@@ -1801,9 +1812,11 @@ async function runBlastBatch(adminPhone) {
     }
   }
 
-  const remaining = 50 - blastQueue.todaySent;
+  const DAILY_LIMIT = 50;
+  const PER_RUN_LIMIT = 7; // ~7 per hour x 8 hours = ~50/day, spread naturally
+  const remaining = Math.min(PER_RUN_LIMIT, DAILY_LIMIT - blastQueue.todaySent);
   if (remaining <= 0) {
-    console.log(`Blast: daily limit reached (${blastQueue.todaySent}/50)`);
+    console.log(`Blast: daily limit reached (${blastQueue.todaySent}/${DAILY_LIMIT})`);
     return;
   }
 
