@@ -4,6 +4,8 @@ const app = express();
 app.use(express.json());
 
 const { handleIncoming } = require("./handler");
+const { registerGuestForServices, sendServiceMenu, startFeedback } = require("./guest-services");
+const { registerGuestForServices, sendServiceMenu, startFeedback } = require("./guest-services");
 
 // ── Webhook verification ───────────────────────────────────────────────────
 app.get("/webhook", (req, res) => {
@@ -32,19 +34,28 @@ app.post("/webhook", async (req, res) => {
 
     let text = "";
     let mediaId = null;
-    const contextMsgId = msg.context?.id || null; // ID of message admin replied to
+    let buttonId = null;
+    const contextMsgId = msg.context?.id || null;
 
     if (msgType === "text") {
       text = msg.text?.body || "";
     } else if (msgType === "image") {
       mediaId = msg.image?.id || null;
       text = msg.image?.caption || "";
+    } else if (msgType === "interactive") {
+      if (msg.interactive?.type === "button_reply") {
+        buttonId = msg.interactive.button_reply?.id;
+        text = msg.interactive.button_reply?.title || "";
+      } else if (msg.interactive?.type === "list_reply") {
+        buttonId = msg.interactive.list_reply?.id;
+        text = msg.interactive.list_reply?.title || "";
+      }
     } else {
-      return; // ignore other types
+      return;
     }
 
-    console.log(`📨 From ${from} [${msgType}]: ${text}`);
-    await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId, contextMsgId });
+    console.log(`📨 From ${from} [${msgType}]: ${text}${buttonId ? " [btn:"+buttonId+"]" : ""}`);
+    await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId, contextMsgId, buttonId });
   } catch (err) {
     console.error("Webhook error:", err.message);
   }
@@ -116,6 +127,18 @@ app.post("/send-checkin", async (req, res) => {
       `*Team ${hotelName}*`;
 
     await sendMessage(phone, msg);
+
+    // Register guest for WhatsApp service requests
+    registerGuestForServices(phone, guestName, hotelName, room, checkout);
+
+    // Send service menu 30 seconds after check-in message
+    setTimeout(async () => {
+      try {
+        const wa = require("./whatsapp");
+        await sendServiceMenu(phone, wa);
+      } catch(e) { console.log("Service menu error:", e.message); }
+    }, 30000);
+
     res.json({ success: true, message: "Check-in message sent to " + phone });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -149,6 +172,15 @@ app.post("/send-checkout", async (req, res) => {
       `*Team ${hotelName}*`;
 
     await sendMessage(phone, msg);
+
+    // Send feedback/rating request 2 minutes after checkout message
+    setTimeout(async () => {
+      try {
+        const wa = require("./whatsapp");
+        await startFeedback(phone, guestName, wa);
+      } catch(e) { console.log("Feedback error:", e.message); }
+    }, 2 * 60 * 1000);
+
     res.json({ success: true, message: "Checkout message sent to " + phone });
   } catch (err) {
     res.status(500).json({ error: err.message });
