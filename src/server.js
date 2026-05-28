@@ -3,6 +3,14 @@ const express = require("express");
 const app = express();
 app.use(express.json());
 
+const auth = (req, res, next) => {
+  const apiKey = process.env.STAYEZEE_API_KEY;
+  if (apiKey && req.headers["x-api-key"] !== apiKey) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+};
+
 const { handleIncoming } = require("./handler");
 const { registerGuestForServices, sendServiceMenu, startFeedback } = require("./guest-services");
 
