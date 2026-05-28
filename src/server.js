@@ -5,7 +5,6 @@ app.use(express.json());
 
 const { handleIncoming } = require("./handler");
 const { registerGuestForServices, sendServiceMenu, startFeedback } = require("./guest-services");
-const { registerGuestForServices, sendServiceMenu, startFeedback } = require("./guest-services");
 
 // ── Webhook verification ───────────────────────────────────────────────────
 app.get("/webhook", (req, res) => {
