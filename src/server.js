@@ -218,19 +218,22 @@ app.post("/send-checkout", async (req, res) => {
     return res.status(401).json({ error: "Unauthorized" });
   }
   try {
-    const { phone, guestName, hotelName, roomCharges, gst, total, reviewLink } = req.body;
+    const { phone, guestName, hotelName, roomType, roomCharges, extraCharges, gst, total, reviewLink } = req.body;
     if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName are required" });
     const templateName = process.env.WA_CHECKOUT_TEMPLATE || "hotel_checkout";
     const wa = require("./whatsapp");
     const result = templateName === "hotel_checkout"
-      ? await wa.sendHotelCheckout(phone, { guestName, hotelName, roomCharges, gst, total, reviewLink })
+      ? await wa.sendHotelCheckout(phone, { guestName, hotelName, roomType, roomCharges, extraCharges, gst, total, reviewLink })
       : await wa.sendTemplate(phone, templateName, [
           guestName,
           hotelName || "Hotel",
+          roomType || "Room",
           Number(roomCharges || 0).toLocaleString("en-IN"),
+          Number(extraCharges || 0).toLocaleString("en-IN"),
           Number(gst || 0).toLocaleString("en-IN"),
           Number(total || 0).toLocaleString("en-IN"),
-          reviewLink || "-"
+          reviewLink || "-",
+          hotelName || "Hotel"
         ]);
 
     // Send feedback/rating request 2 minutes after checkout message

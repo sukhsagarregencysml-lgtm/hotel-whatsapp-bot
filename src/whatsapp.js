@@ -196,14 +196,17 @@ async function sendHotelCheckin(to, { hotelName, guestName, room, checkout, plan
   return sendTemplate(to, "hotel_checkin", [hotelName || "Hotel", guestName || "Guest", room || "-", checkout || "-", plan || "-", wifi || "-"]);
 }
 
-async function sendHotelCheckout(to, { guestName, hotelName, roomCharges, gst, total, reviewLink }) {
+async function sendHotelCheckout(to, { guestName, hotelName, roomType, roomCharges, extraCharges, gst, total, reviewLink }) {
   return sendTemplate(to, "hotel_checkout", [
     guestName || "Guest",
     hotelName || "Hotel",
+    roomType || "Room",
     Number(roomCharges || 0).toLocaleString("en-IN"),
+    Number(extraCharges || 0).toLocaleString("en-IN"),
     Number(gst || 0).toLocaleString("en-IN"),
     Number(total || 0).toLocaleString("en-IN"),
-    reviewLink || "-"
+    reviewLink || "-",
+    hotelName || "Hotel"
   ]);
 }
 
