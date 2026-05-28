@@ -178,11 +178,20 @@ app.post("/send-checkin", async (req, res) => {
     const templateName = process.env.WA_CHECKIN_TEMPLATE || "guest_check_in";
     const wa = require("./whatsapp");
     const values = { hotelName, guestName, room, checkout, plan, wifi };
-    const result = templateName === "hotel_checkin"
-      ? await wa.sendHotelCheckin(phone, values)
-      : templateName === "guest_check_in"
-        ? await wa.sendGuestCheckIn(phone, values)
-        : await wa.sendTemplate(phone, templateName, [hotelName || "Hotel", guestName, room || "-", checkout || "-", plan || "-", wifi || "-"]);
+    let sentTemplate = templateName;
+    let result;
+    try {
+      result = templateName === "hotel_checkin"
+        ? await wa.sendHotelCheckin(phone, values)
+        : templateName === "guest_check_in"
+          ? await wa.sendGuestCheckIn(phone, values)
+          : await wa.sendTemplate(phone, templateName, [hotelName || "Hotel", guestName, room || "-", checkout || "-", plan || "-", wifi || "-"]);
+    } catch (templateErr) {
+      if (templateName !== "guest_check_in") throw templateErr;
+      console.log("guest_check_in failed, trying hotel_checkin:", templateErr.response?.data?.error?.message || templateErr.message);
+      sentTemplate = "hotel_checkin";
+      result = await wa.sendHotelCheckin(phone, values);
+    }
 
     // Register guest for WhatsApp service requests
     registerGuestForServices(phone, guestName, hotelName, room, checkout);
@@ -195,9 +204,9 @@ app.post("/send-checkin", async (req, res) => {
       } catch(e) { console.log("Service menu error:", e.message); }
     }, 30000);
 
-    res.json({ success: true, message: "Check-in template sent to " + phone, template: templateName, meta: result });
+    res.json({ success: true, message: "Check-in template sent to " + phone, template: sentTemplate, meta: result });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message, detail: err.response?.data });
   }
 });
 
@@ -234,7 +243,7 @@ app.post("/send-checkout", async (req, res) => {
 
     res.json({ success: true, message: "Checkout template sent to " + phone, template: templateName, meta: result });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message, detail: err.response?.data });
   }
 });
 
