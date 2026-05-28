@@ -61,6 +61,62 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
+// ── Bot tasks proxy (for Chats page) ───────────────────────────
+app.get('/api/bot/tasks', auth, async (req, res) => {
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const https = require('https');
+      https.get('https://hotel-whatsapp-bot-2ole.onrender.com/active-tasks', r => {
+        let body = '';
+        r.on('data', d => body += d);
+        r.on('end', () => resolve(JSON.parse(body)));
+      }).on('error', reject);
+    });
+    res.json(result);
+  } catch(err) {
+    res.json({ success: true, tasks: [] });
+  }
+});
+
+// ── Send WhatsApp message proxy ─────────────────────────────────
+app.post('/api/whatsapp/send', auth, async (req, res) => {
+  try {
+    const { phone, message } = req.body;
+    const https = require('https');
+    const payload = JSON.stringify({ to: phone, message });
+    const r = await new Promise((resolve, reject) => {
+      const req2 = https.request({
+        hostname: 'hotel-whatsapp-bot-2ole.onrender.com',
+        port: 443, path: '/send-message', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+      }, r => { let b = ''; r.on('data', d => b += d); r.on('end', () => resolve(JSON.parse(b))); });
+      req2.on('error', reject);
+      req2.write(payload); req2.end();
+    });
+    res.json({ success: true });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+
+// ── Feedback summary (for PMS Business Overview) ────────────────
+app.get("/feedback-summary", async (req, res) => {
+  const { feedbackSessions } = require("./guest-services");
+  // Return stored feedback history
+  const feedbacks = global.feedbackHistory || [];
+  const avg = feedbacks.length > 0
+    ? feedbacks.reduce((s,f) => s + f.rating, 0) / feedbacks.length
+    : 0;
+  res.json({ success: true, feedbacks, avgRating: avg.toFixed(1), total: feedbacks.length });
+});
+
+// ── Tasks history (completed tasks log) ─────────────────────────
+app.get("/tasks-history", async (req, res) => {
+  const history = global.tasksHistory || [];
+  res.json({ success: true, tasks: history });
+});
+
 // ── Health check ───────────────────────────────────────────────────────────
 app.get("/", (req, res) => res.json({ status: "Hotel bot running ✓" }));
 

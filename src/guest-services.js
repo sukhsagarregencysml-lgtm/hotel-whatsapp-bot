@@ -375,6 +375,16 @@ async function completeTask(taskId, completedBy, wa) {
     `Time: ${timeTaken} min ${timeTaken <= 5 ? '✅' : timeTaken <= 15 ? '⚠️' : '🚨'}`
   );
 
+  // Store in task history
+  if (!global.tasksHistory) global.tasksHistory = [];
+  global.tasksHistory.unshift({
+    id: taskId, roomNumber: task.roomNumber, guestName: task.guestName,
+    dept: task.dept, service: task.service, status: 'done',
+    timeTaken, completedBy, createdAt: task.createdAt,
+    completedAt: task.completedAt
+  });
+  if (global.tasksHistory.length > 200) global.tasksHistory = global.tasksHistory.slice(0, 200);
+
   delete activeTasks[taskId];
   return true;
 }
@@ -406,6 +416,15 @@ async function handleFeedback(phone, buttonId, text, wa) {
     session.rating = rating;
     const stars = '⭐'.repeat(Math.min(rating, 5));
 
+    // Store in feedback history
+    if (!global.feedbackHistory) global.feedbackHistory = [];
+    global.feedbackHistory.unshift({
+      phone, rating, roomNumber: guest.roomNumber,
+      guestName: guest.guestName, reason: null,
+      time: new Date().toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'})
+    });
+    if (global.feedbackHistory.length > 100) global.feedbackHistory = global.feedbackHistory.slice(0, 100);
+
     if (rating >= 4) {
       delete feedbackSessions[phone];
       await wa.sendMessage(phone,
@@ -431,6 +450,11 @@ async function handleFeedback(phone, buttonId, text, wa) {
 
   if (session.step === 'reason') {
     const stars = '⭐'.repeat(session.rating);
+    // Update reason in history
+    if (global.feedbackHistory) {
+      const entry = global.feedbackHistory.find(f => f.phone === phone);
+      if (entry) entry.reason = text.trim();
+    }
     delete feedbackSessions[phone];
     await wa.sendMessage(phone,
       `Thank you for sharing. 🙏\n\nYour feedback has been shared with our management.\nWe hope to serve you better next time!\n\nTeam ${guest.hotelName}`
