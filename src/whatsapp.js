@@ -20,6 +20,7 @@ async function sendMessage(to, text) {
     return res.data;
   } catch (err) {
     console.error(`✗ Failed to send to ${toNum}:`, JSON.stringify(err.response?.data || err.message));
+    throw err;
   }
 }
 
@@ -150,6 +151,7 @@ async function sendTemplate(to, templateName, params = []) {
     return res.data;
   } catch (err) {
     console.error(`✗ Failed template "${templateName}" to ${toNum}:`, JSON.stringify(err.response?.data || err.message));
+    throw err;
   }
 }
 
@@ -186,6 +188,29 @@ async function sendAskPlan(to, { ciDate, coDate, rooms }) {
   return sendTemplate(to, "hotel_ask_plan", [fmtDate(ciDate), fmtDate(coDate), String(rooms)]);
 }
 
+async function sendGuestCheckIn(to, { hotelName, guestName, room, checkout, plan, wifi }) {
+  return sendTemplate(to, "guest_check_in", [hotelName || "Hotel", guestName || "Guest", room || "-", checkout || "-", plan || "-", wifi || "-"]);
+}
+
+async function sendHotelCheckin(to, { hotelName, guestName, room, checkout, plan, wifi }) {
+  return sendTemplate(to, "hotel_checkin", [hotelName || "Hotel", guestName || "Guest", room || "-", checkout || "-", plan || "-", wifi || "-"]);
+}
+
+async function sendHotelCheckout(to, { guestName, hotelName, roomCharges, gst, total, reviewLink }) {
+  return sendTemplate(to, "hotel_checkout", [
+    guestName || "Guest",
+    hotelName || "Hotel",
+    Number(roomCharges || 0).toLocaleString("en-IN"),
+    Number(gst || 0).toLocaleString("en-IN"),
+    Number(total || 0).toLocaleString("en-IN"),
+    reviewLink || "-"
+  ]);
+}
+
+async function sendHelloWorld(to) {
+  return sendTemplate(to, "hello_world");
+}
+
 async function sendReminder(to, text) {
   return sendMessage(to, text);
 }
@@ -193,5 +218,6 @@ async function sendReminder(to, text) {
 module.exports = {
   sendMessage, sendTemplate, sendReminder,
   sendEnquiryAck, sendRoomAvailable, sendNotAvailable, sendConfirmed, sendAskPlan,
+  sendGuestCheckIn, sendHotelCheckin, sendHotelCheckout, sendHelloWorld,
   sendButtonMessage, sendListMessage, sendRatingButtons
 };

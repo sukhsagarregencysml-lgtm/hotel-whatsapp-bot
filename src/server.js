@@ -167,21 +167,14 @@ app.post("/send-checkin", async (req, res) => {
   try {
     const { phone, guestName, hotelName, room, checkout, plan, wifi } = req.body;
     if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName are required" });
-    const { sendMessage } = require("./whatsapp");
-
-    const msg =
-      `🏨 *Welcome to ${hotelName}!*\n\n` +
-      `Dear *${guestName}*,\n\n` +
-      `You are now successfully checked in. Here are your stay details:\n\n` +
-      `🛏 *Room:* ${room}\n` +
-      `📅 *Check-out:* ${checkout}\n` +
-      `🍽 *Meal Plan:* ${plan}\n` +
-      `📶 *WiFi Password:* ${wifi}\n\n` +
-      `📞 For any assistance, please call reception or reply to this message.\n\n` +
-      `We wish you a wonderful and comfortable stay! 🙏\n` +
-      `*Team ${hotelName}*`;
-
-    await sendMessage(phone, msg);
+    const templateName = process.env.WA_CHECKIN_TEMPLATE || "guest_check_in";
+    const wa = require("./whatsapp");
+    const values = { hotelName, guestName, room, checkout, plan, wifi };
+    const result = templateName === "hotel_checkin"
+      ? await wa.sendHotelCheckin(phone, values)
+      : templateName === "guest_check_in"
+        ? await wa.sendGuestCheckIn(phone, values)
+        : await wa.sendTemplate(phone, templateName, [hotelName || "Hotel", guestName, room || "-", checkout || "-", plan || "-", wifi || "-"]);
 
     // Register guest for WhatsApp service requests
     registerGuestForServices(phone, guestName, hotelName, room, checkout);
@@ -194,7 +187,7 @@ app.post("/send-checkin", async (req, res) => {
       } catch(e) { console.log("Service menu error:", e.message); }
     }, 30000);
 
-    res.json({ success: true, message: "Check-in message sent to " + phone });
+    res.json({ success: true, message: "Check-in template sent to " + phone, template: templateName, meta: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -210,23 +203,18 @@ app.post("/send-checkout", async (req, res) => {
   try {
     const { phone, guestName, hotelName, roomCharges, gst, total, reviewLink } = req.body;
     if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName are required" });
-    const { sendMessage } = require("./whatsapp");
-
-    const msg =
-      `🙏 *Thank You for Staying with Us!*\n\n` +
-      `Dear *${guestName}*,\n\n` +
-      `It was a pleasure having you at *${hotelName}*. We hope you had a wonderful stay!\n\n` +
-      `📋 *Final Bill Summary*\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `🏷 Room Charges: Rs.${Number(roomCharges).toLocaleString('en-IN')}\n` +
-      `📊 GST: Rs.${Number(gst).toLocaleString('en-IN')}\n` +
-      `💰 *Total Paid: Rs.${Number(total).toLocaleString('en-IN')}*\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `We look forward to welcoming you again! 😊\n\n` +
-      (reviewLink ? `⭐ Loved your stay? Please share your experience:\n${reviewLink}\n\n` : "") +
-      `*Team ${hotelName}*`;
-
-    await sendMessage(phone, msg);
+    const templateName = process.env.WA_CHECKOUT_TEMPLATE || "hotel_checkout";
+    const wa = require("./whatsapp");
+    const result = templateName === "hotel_checkout"
+      ? await wa.sendHotelCheckout(phone, { guestName, hotelName, roomCharges, gst, total, reviewLink })
+      : await wa.sendTemplate(phone, templateName, [
+          guestName,
+          hotelName || "Hotel",
+          Number(roomCharges || 0).toLocaleString("en-IN"),
+          Number(gst || 0).toLocaleString("en-IN"),
+          Number(total || 0).toLocaleString("en-IN"),
+          reviewLink || "-"
+        ]);
 
     // Send feedback/rating request 2 minutes after checkout message
     setTimeout(async () => {
@@ -236,7 +224,7 @@ app.post("/send-checkout", async (req, res) => {
       } catch(e) { console.log("Feedback error:", e.message); }
     }, 2 * 60 * 1000);
 
-    res.json({ success: true, message: "Checkout message sent to " + phone });
+    res.json({ success: true, message: "Checkout template sent to " + phone, template: templateName, meta: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -331,70 +319,14 @@ cron.schedule("0 9,10,11,12,13,14,15,16 * * *", async () => {
 console.log("⏰ Blast cron scheduled hourly 9AM-5PM IST (50/day max)");
 
 // ── AC STATUS REMINDER — every 2 hours ────────────────────────
-const axios = require("axios");
-
 const AC_REMINDER_PHONE = "918627038322";
 const AC_TEMPLATE_NAME = "ac_status_reminder";
 
 async function sendACReminder() {
   try {
-    const phoneId = process.env.WA_PHONE_NUMBER_ID;
-    const token = process.env.WA_ACCESS_TOKEN;
-    if (!phoneId || !token) {
-      console.log("AC reminder: WA credentials not set");
-      return;
-    }
-
-    // Try plain text first (works if they messaged within 24hrs)
-    // Fallback to template if plain text fails
-    let sent = false;
-
-    try {
-      const res = await axios.post(
-        `https://graph.facebook.com/v25.0/${phoneId}/messages`,
-        {
-          messaging_product: "whatsapp",
-          recipient_type: "individual",
-          to: AC_REMINDER_PHONE,
-          type: "text",
-          text: { body: "Kindly update AC status on group 🙏" }
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json"
-          }
-        }
-      );
-      console.log(`✓ AC reminder (text) sent to ${AC_REMINDER_PHONE}:`, res.data?.messages?.[0]?.id);
-      sent = true;
-    } catch(textErr) {
-      console.log("Plain text failed, trying template...", textErr.response?.data?.error?.message);
-    }
-
-    // Fallback to template if plain text failed
-    if (!sent) {
-      const res = await axios.post(
-        `https://graph.facebook.com/v25.0/${phoneId}/messages`,
-        {
-          messaging_product: "whatsapp",
-          recipient_type: "individual",
-          to: AC_REMINDER_PHONE,
-          type: "template",
-          template: {
-            name: AC_TEMPLATE_NAME,
-            language: { code: "en" }
-          }
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json"
-          }
-        }
-      );
-      console.log(`✓ AC reminder (template) sent to ${AC_REMINDER_PHONE}:`, res.data?.messages?.[0]?.id);
-    }
+    const { sendTemplate } = require("./whatsapp");
+    const result = await sendTemplate(AC_REMINDER_PHONE, AC_TEMPLATE_NAME);
+    console.log(`✓ AC reminder (template) sent to ${AC_REMINDER_PHONE}:`, result?.messages?.[0]?.id);
   } catch (err) {
     console.error("✗ AC reminder error:", err.response?.data || err.message);
   }
