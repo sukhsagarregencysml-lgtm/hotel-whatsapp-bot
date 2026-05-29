@@ -13,6 +13,7 @@ const SERVICES_CONFIG = {
     laundry:      process.env.HOD_LAUNDRY      || '919816003322',
   },
   GOOGLE_REVIEW_LINK: process.env.GOOGLE_REVIEW_LINK || 'https://g.page/r/YOUR_REVIEW_LINK',
+  RESTAURANT_MENU_URL: process.env.RESTAURANT_MENU_URL || 'https://sukhsagarregency.com/welcome.html',
   PMS_URL: process.env.PMS_URL || 'https://hotelease-backend-fhba.onrender.com',
 };
 
@@ -224,6 +225,10 @@ async function sendHousekeepingList(phone, wa) {
 
 // ── SEND FOOD LIST ────────────────────────────────────────────────
 async function sendFoodList(phone, wa) {
+  await wa.sendMessage(
+    phone,
+    `🍽 *Restaurant Menu*\n\nPlease view our live restaurant menu here:\n${SERVICES_CONFIG.RESTAURANT_MENU_URL}\n\nTap an item below or type your order.`
+  );
   await wa.sendListMessage(
     phone,
     `What would you like from Room Service?\n\nTap to select:`,
@@ -283,6 +288,7 @@ async function createTask(phone, dept, service, wa) {
 
   const task = {
     id: taskId, phone,
+    hotelId: guest.hotelId,
     guestName: guest.guestName,
     roomNumber: guest.roomNumber,
     hotelName: guest.hotelName,
@@ -294,10 +300,21 @@ async function createTask(phone, dept, service, wa) {
   };
   activeTasks[taskId] = task;
 
+  if (dept === 'food') {
+    await createRestaurantOrder(task, service);
+  }
+
+  const serviceName = service.split(': ').pop();
+  const guestMessage = dept === 'food'
+    ? `✅ *Restaurant Order Received!*\n\nOrder ID: *${taskId}*\nItem: ${serviceName}\nRoom: ${guest.roomNumber}\n\nThank you for ordering. Your restaurant order will be served shortly.\n\nMenu: ${SERVICES_CONFIG.RESTAURANT_MENU_URL}`
+    : dept === 'housekeeping'
+      ? `✅ *Housekeeping Request Received!*\n\nID: *${taskId}*\nService: ${serviceName}\nRoom: ${guest.roomNumber}\n\nThank you. Your requested item/service will be provided within *10 minutes*.`
+      : `✅ *Request Received!*\n\nID: *${taskId}*\nService: ${serviceName}\nRoom: ${guest.roomNumber}\n\nThank you. Our staff will attend to you shortly.`;
+
   // Confirm to guest with button to request another service
   await wa.sendButtonMessage(
     phone,
-    `✅ *Request Received!*\n\nID: *${taskId}*\nService: ${service.split(': ').pop()}\nRoom: ${guest.roomNumber}\n\nOur staff will attend to you shortly 🙏`,
+    guestMessage,
     [{ id: `status_${taskId}`, title: '📋 Check Status' },
      { id: 'menu_main', title: '🏨 More Services' }],
     null,
@@ -347,6 +364,28 @@ async function createTask(phone, dept, service, wa) {
   }, SERVICES_CONFIG.TASK_TIMEOUT_STAFF);
 
   return taskId;
+}
+
+async function createRestaurantOrder(task, service) {
+  try {
+    const axios = require('axios');
+    const secret = process.env.CHAT_WEBHOOK_SECRET || process.env.STAYEZEE_API_KEY || '';
+    await axios.post(
+      `${SERVICES_CONFIG.PMS_URL.replace(/\/$/, '')}/api/restaurant/orders`,
+      {
+        hotelId: task.hotelId,
+        phone: task.phone,
+        guestName: task.guestName,
+        roomNumber: task.roomNumber,
+        itemName: service.split(': ').pop(),
+        quantity: 1,
+        amount: 0
+      },
+      { headers: secret ? { 'x-chat-secret': secret } : {} }
+    );
+  } catch (err) {
+    console.log('Restaurant order sync skipped:', err.response?.data?.error || err.message);
+  }
 }
 
 // ── COMPLETE TASK ─────────────────────────────────────────────────
@@ -405,7 +444,7 @@ async function handleFeedback(phone, buttonId, text, wa) {
     let rating = 0;
     if (buttonId === 'rating_5') rating = 5;
     else if (buttonId === 'rating_4') rating = 4;
-    else if (buttonId === 'rating_low') rating = 2;
+    else if (buttonId === 'rating_low') rating = 3;
     else rating = parseInt(text) || 0;
 
     if (!rating || rating < 1 || rating > 5) {
@@ -439,6 +478,9 @@ async function handleFeedback(phone, buttonId, text, wa) {
       );
     } else {
       session.step = 'reason';
+      await wa.sendMessage(process.env.ADMIN_PHONE || '919816003322',
+        `⚠️ *FOLLOW-UP NEEDED*\n\nRoom: ${guest.roomNumber} | Guest: ${guest.guestName} (${phone})\nRating: ${stars} (${rating}/5)\n\nGuest has been asked for details.`
+      );
       await wa.sendMessage(phone,
         `${stars} Thank you for your honest feedback.\n\n` +
         `We're sorry your experience wasn't perfect. 🙏\n\n` +

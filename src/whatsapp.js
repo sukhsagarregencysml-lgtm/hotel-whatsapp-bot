@@ -158,7 +158,7 @@ async function sendRatingButtons(to, guestName) {
     [
       { id: 'rating_5', title: '⭐⭐⭐⭐⭐ Excellent' },
       { id: 'rating_4', title: '⭐⭐⭐⭐ Good' },
-      { id: 'rating_low', title: '⭐⭐⭐ or below' },
+      { id: 'rating_low', title: '⭐⭐⭐ Average' },
     ],
     null,
     'Tap to rate your experience'
