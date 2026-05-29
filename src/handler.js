@@ -57,7 +57,7 @@ async function getAgent(phone) {
   return db.getAgent(phone);
 }
 
-async function handleIncoming({ from, text, msgId, msgType, mediaId }) {
+async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId }) {
   const t = (text || "").trim().toUpperCase();
   console.log(`MSG From ${from}: ${text || "[media]"}`);
 
