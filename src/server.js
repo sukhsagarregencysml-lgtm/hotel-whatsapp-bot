@@ -12,7 +12,8 @@ const auth = (req, res, next) => {
 };
 
 const { handleIncoming } = require("./handler");
-const { registerGuestForServices, sendServiceMenu, startFeedback } = require("./guest-services");
+const { registerGuestForServices, sendServiceMenu, startFeedback, guestRoomMap } = require("./guest-services");
+const { syncChatMessage } = require("./chat-sync");
 
 // ── Webhook verification ───────────────────────────────────────────────────
 app.get("/webhook", (req, res) => {
@@ -62,6 +63,19 @@ app.post("/webhook", async (req, res) => {
     }
 
     console.log(`📨 From ${from} [${msgType}]: ${text}${buttonId ? " [btn:"+buttonId+"]" : ""}`);
+    const guest = guestRoomMap[from] || {};
+    await syncChatMessage({
+      hotelId: guest.hotelId,
+      phone: from,
+      guestName: guest.guestName,
+      roomNumber: guest.roomNumber,
+      direction: "inbound",
+      sender: "guest",
+      messageType: msgType,
+      message: text || buttonId || msgType,
+      waMessageId: msg.id,
+      meta: { buttonId, mediaId, contextMsgId }
+    });
     await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId, contextMsgId, buttonId });
   } catch (err) {
     console.error("Webhook error:", err.message);
@@ -103,6 +117,24 @@ app.post('/api/whatsapp/send', auth, async (req, res) => {
     res.json({ success: true });
   } catch(err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/send-message', async (req, res) => {
+  const apiKey = process.env.STAYEZEE_API_KEY;
+  if (apiKey && req.headers["x-api-key"] !== apiKey) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  try {
+    const { phone, to, message, text, hotelId, sender } = req.body;
+    const target = phone || to;
+    const body = message || text;
+    if (!target || !body) return res.status(400).json({ error: "phone and message are required" });
+    const { sendMessage } = require("./whatsapp");
+    const result = await sendMessage(target, body, { skipSync: true, hotelId, sender: sender || "staff" });
+    res.json({ success: true, message: "Message sent to " + target, meta: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message, detail: err.response?.data });
   }
 });
 
@@ -173,7 +205,7 @@ app.post("/send-checkin", async (req, res) => {
     return res.status(401).json({ error: "Unauthorized" });
   }
   try {
-    const { phone, guestName, hotelName, room, checkout, plan, wifi } = req.body;
+    const { hotelId, phone, guestName, hotelName, room, checkout, plan, wifi } = req.body;
     if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName are required" });
     const templateName = process.env.WA_CHECKIN_TEMPLATE || "guest_check_in";
     const wa = require("./whatsapp");
@@ -194,7 +226,7 @@ app.post("/send-checkin", async (req, res) => {
     }
 
     // Register guest for WhatsApp service requests
-    registerGuestForServices(phone, guestName, hotelName, room, checkout);
+    registerGuestForServices(phone, guestName, hotelName, room, checkout, hotelId);
 
     // Send service menu 30 seconds after check-in message
     setTimeout(async () => {

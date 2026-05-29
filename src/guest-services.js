@@ -163,10 +163,10 @@ Object.values(DEPARTMENTS).forEach(dept => {
 });
 
 // ── REGISTER GUEST ────────────────────────────────────────────────
-function registerGuestForServices(phone, guestName, hotelName, roomNumber, checkoutDate) {
+function registerGuestForServices(phone, guestName, hotelName, roomNumber, checkoutDate, hotelId = null) {
   const cleanPhone = phone.replace(/[^0-9]/g, '');
   const waPhone = cleanPhone.startsWith('91') ? cleanPhone : '91' + cleanPhone;
-  guestRoomMap[waPhone] = { roomNumber, guestName, hotelName, checkoutDate, registeredAt: new Date().toISOString() };
+  guestRoomMap[waPhone] = { hotelId, roomNumber, guestName, hotelName, checkoutDate, registeredAt: new Date().toISOString() };
   console.log(`✅ Guest registered: ${waPhone} → Room ${roomNumber}`);
 }
 

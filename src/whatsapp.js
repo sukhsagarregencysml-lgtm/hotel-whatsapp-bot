@@ -1,10 +1,11 @@
 const axios = require("axios");
+const { syncChatMessage } = require("./chat-sync");
 
 const BASE_URL = "https://graph.facebook.com/v25.0";
 const PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID;
 const ACCESS_TOKEN = process.env.WA_ACCESS_TOKEN;
 
-async function sendMessage(to, text) {
+async function sendMessage(to, text, options = {}) {
   const toNum = to.replace(/^\+/, "");
   if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) {
     console.log(`[MOCK] To: ${toNum}\n${text}`);
@@ -17,6 +18,18 @@ async function sendMessage(to, text) {
       { headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, "Content-Type": "application/json" } }
     );
     console.log(`✓ Text sent to ${toNum}`);
+    if (!options.skipSync) {
+      await syncChatMessage({
+        hotelId: options.hotelId,
+        phone: toNum,
+        direction: "outbound",
+        sender: options.sender || "bot",
+        messageType: "text",
+        message: text,
+        waMessageId: res.data?.messages?.[0]?.id,
+        meta: res.data
+      });
+    }
     return res.data;
   } catch (err) {
     console.error(`✗ Failed to send to ${toNum}:`, JSON.stringify(err.response?.data || err.message));
@@ -57,6 +70,15 @@ async function sendButtonMessage(to, bodyText, buttons, headerText = null, foote
       { headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, "Content-Type": "application/json" } }
     );
     console.log(`✓ Buttons sent to ${toNum}`);
+    await syncChatMessage({
+      phone: toNum,
+      direction: "outbound",
+      sender: "bot",
+      messageType: "interactive",
+      message: bodyText,
+      waMessageId: res.data?.messages?.[0]?.id,
+      meta: res.data
+    });
     return res.data;
   } catch (err) {
     console.error(`✗ Failed buttons to ${toNum}:`, JSON.stringify(err.response?.data || err.message));
@@ -109,6 +131,15 @@ async function sendListMessage(to, bodyText, buttonLabel, sections, headerText =
       { headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, "Content-Type": "application/json" } }
     );
     console.log(`✓ List sent to ${toNum}`);
+    await syncChatMessage({
+      phone: toNum,
+      direction: "outbound",
+      sender: "bot",
+      messageType: "interactive",
+      message: bodyText,
+      waMessageId: res.data?.messages?.[0]?.id,
+      meta: res.data
+    });
     return res.data;
   } catch (err) {
     console.error(`✗ Failed list to ${toNum}:`, JSON.stringify(err.response?.data || err.message));
@@ -148,6 +179,15 @@ async function sendTemplate(to, templateName, params = []) {
       { headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, "Content-Type": "application/json" } }
     );
     console.log(`✓ Template "${templateName}" sent to ${toNum}`);
+    await syncChatMessage({
+      phone: toNum,
+      direction: "outbound",
+      sender: "bot",
+      messageType: "template",
+      message: `Template: ${templateName}`,
+      waMessageId: res.data?.messages?.[0]?.id,
+      meta: { ...res.data, template: templateName }
+    });
     return res.data;
   } catch (err) {
     console.error(`✗ Failed template "${templateName}" to ${toNum}:`, JSON.stringify(err.response?.data || err.message));
