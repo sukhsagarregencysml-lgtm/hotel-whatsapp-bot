@@ -1166,15 +1166,17 @@ async function confirmAndSave(from, agent, session) {
           pendingPayments[from].secondPaymentAmount = Math.round(total * 0.35);
           pendingPayments[from].secondPaymentDueDate = reminderDate.toLocaleDateString("en-IN", {day:"numeric",month:"short",year:"numeric"});
         }
-        // Notify admin about upcoming 2nd payment date
-        await sendReminder(ADMIN_PHONE,
-          `📅 *2ND PAYMENT INFO*\n` +
-          `Agent: ${agent.name} (${from})\n` +
-          `Voucher: ${voucherNo}\n` +
-          `2nd Payment (35%): Rs.${Math.round(total * 0.35).toLocaleString()}\n` +
-          `Due by: ${reminderDate.toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"})}\n\n` +
-          `To send reminder: *SEND REMINDER ${from}*`
-        );
+        // Only notify admin for agent bookings (not BOOK1 guest)
+        if (!session.isGuestBooking) {
+          await sendReminder(ADMIN_PHONE,
+            `📅 *2ND PAYMENT INFO*\n` +
+            `Agent: ${agent.name} (${from})\n` +
+            `Voucher: ${voucherNo}\n` +
+            `2nd Payment (35%): Rs.${Math.round(total * 0.35).toLocaleString()}\n` +
+            `Due by: ${reminderDate.toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"})}\n\n` +
+            `To send reminder: *SEND REMINDER ${from}*`
+            );
+        }
       }
     } catch(qrErr) {
       console.error("QR send error:", qrErr.message);
@@ -1738,7 +1740,7 @@ async function handleAdminReply(from, text, t) {
     if (isBook1 || isBook2) text = "BOOK " + text.slice(6);
     try {
       const rawParts = text.trim().split(/\s+/);
-      const guestPhone = rawParts[1].replace(/\D/g, "");
+      const guestPhone = rawParts[1].replace(/\D/g, ""); // removes dots, spaces etc
       const fullPhone = guestPhone.startsWith("91") ? guestPhone : "91" + guestPhone;
       const afterPhone = rawParts.slice(2).join(" ");
 
@@ -1749,7 +1751,7 @@ async function handleAdminReply(from, text, t) {
 
       // ── Step 2: Extract ADV (advance already received) ──────────
       // Must be done BEFORE rate detection so ADV amount isn't picked as rate
-      const advMatch = clean.match(/ADV(?:ANCE)?\s+(\d+)/i) || clean.match(/PAID\s+(\d+)/i);
+      const advMatch = clean.match(/\bADV(?:ANCE)?\s*(\d+)\b/i) || clean.match(/\bPAID\s*(\d+)\b/i);
       const advancePaid = advMatch ? parseInt(advMatch[1]) : 0;
       if (advMatch) clean = clean.replace(advMatch[0], "").trim();
 
@@ -1809,7 +1811,11 @@ Format: *BOOK1 919... Rahul 22july 24july 2dlx CP 14400 ADV 3000*`);
       const dRe = /\d{1,2}[.\-\/]\d{1,2}|\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
       const dIdx = clean.search(dRe);
       let guestName = dIdx > 0 ? clean.slice(0, dIdx).trim() : "Guest";
-      guestName = guestName.replace(/(CP|MAP|MAPAI|EP|deluxe|dlx|super|sdlx|honey|hm|\d+)/gi, "").trim() || "Guest";
+      guestName = guestName
+        .replace(/^name\s+/i, "") // remove "Name" prefix if typed
+        .replace(/(CP|MAP|MAPAI|EP|deluxe|dlx|super|sdlx|honey|hm|\d+)/gi, "")
+        .replace(/\./g, "") // remove dots (like "918627038322.")
+        .trim() || "Guest";
 
       // ── Step 8: Auto-add guest ───────────────────────────────────
       const { getAgent: ga, addAgent: aa } = require("./agents");
