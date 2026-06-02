@@ -1,7 +1,7 @@
 "use strict";
 const { parseEnquiry } = require("./parser");
 const { handleGuestServices, registerGuestForServices, sendServiceMenu, startFeedback } = require("./guest-services");
-const { getTally, updateTally, useFreeRooms, addAgent, removeAgent, listAgents } = require("./agents");
+const { getTally, updateTally, useFreeRooms } = require("./agents");
 const { checkAvailability, saveReservation, cancelReservation } = require("./stayezee");
 const { getRate, getCustomerRate, CUSTOMER_EXTRAS } = require("./rates");
 const {
@@ -16,8 +16,7 @@ const sessions = {};
 const pendingOptIns = {};
 const optedInGuests = {};
 const guestSessions = {};
-const pendingPayments = {}; // phone -> payment details
-const pendingCancellations = {}; // voucherNo -> cancellation details
+const pendingPayments = {}; // phone -> { agentName, amount, total, remaining, voucherNo, ciDate, coDate }
 
 // Hotel info - customize per hotel
 const HOTEL_INFO = {
@@ -119,19 +118,14 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
   // -- CHECK IF REGISTERED AGENT ------------------------------------------
   const agent = await getAgent(from);
   if (!agent || agent.category === "Guest") {
-    // Handle payment screenshot from guests BEFORE routing
-    if (msgType === "image" && agent && agent.category === "Guest") {
-      const pending = pendingPayments[from];
-      if (pending) {
-        await sendMessage(from, `✅ *Screenshot received!*\n\nVoucher: *${pending.voucherNo}*\nAmount: Rs.${pending.amount.toLocaleString()}\n\nPending admin approval. 🙏`);
-        await sendReminder(ADMIN_PHONE,
-          `📸 *PAYMENT SCREENSHOT*\n\nGuest: ${pending.agentName} (${from})\nVoucher: ${pending.voucherNo}\nAmount: Rs.${pending.amount.toLocaleString()}\nGuest: ${pending.guestName}\nCheck-in: ${fmtDate(pending.ciDate)}\n\nAPPROVE PAY ${from} ${pending.amount}\nREJECT PAY ${from}`
-        );
-        return;
+    // Guests added by admin should not get agent booking flow
+    // Handle payment screenshot from guests
+    if (agent && agent.category === "Guest") {
+      // Only handle payment screenshot — rest goes to guest flow
+      if (sessions[from]?.step && sessions[from].step !== "idle") {
+        // clear any accidental agent session
+        sessions[from] = { step: "idle" };
       }
-    }
-    if (agent && agent.category === "Guest" && sessions[from]?.step && sessions[from].step !== "idle") {
-      sessions[from] = { step: "idle" };
     }
     await handleGuest(from, text, t, buttonId);
     return;
@@ -147,45 +141,6 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
   sessions[from] = session;
   session.agentName = agent.name;
   session.agentCategory = agent.category;
-
-  // ── CANCEL BOOKING ────────────────────────────────────────────
-  if (t === "CANCEL" || t === "CANCEL BOOKING") {
-    const agentBookings = Object.entries(pendingPayments).filter(([p])=>p===from).map(([,b])=>b);
-    if (!agentBookings.length) { await sendMessage(from, `❌ No active bookings found.\n📞 +91 98160 03322`); return; }
-    if (agentBookings.length === 1) {
-      const b=agentBookings[0]; session.step="awaiting_cancel_confirm"; session.cancelVoucherNo=b.voucherNo;
-      const daysLeft=Math.round((new Date(b.ciDate)-new Date())/86400000);
-      await sendMessage(from, `❌ *CANCEL BOOKING?*\n\nVoucher: *${b.voucherNo}*\nGuest: ${b.guestName}\nCheck-in: ${fmtDate(b.ciDate)}\nAdvance Paid: Rs.${(b.paidSoFar||b.amount||0).toLocaleString()}\n\n${daysLeft>15?"✅ Full refund":"❌ No refund (within 15 days)"}\n\nReply *YES* to cancel\nReply *NO* to keep`);
-    } else {
-      session.step="awaiting_cancel_select"; session.cancelOptions=agentBookings;
-      await sendMessage(from, `❌ *Which booking to cancel?*\n\n${agentBookings.map((b,i)=>`*${i+1}.* ${b.voucherNo} — ${b.guestName} — ${fmtDate(b.ciDate)}`).join("\n")}\n\nReply with number`);
-    }
-    return;
-  }
-  if (session.step === "awaiting_cancel_select") {
-    const idx=parseInt(t)-1;
-    if(isNaN(idx)||idx<0||idx>=(session.cancelOptions||[]).length){await sendMessage(from,`Reply 1 to ${(session.cancelOptions||[]).length}`);return;}
-    const b=session.cancelOptions[idx]; session.step="awaiting_cancel_confirm"; session.cancelVoucherNo=b.voucherNo;
-    const daysLeft=Math.round((new Date(b.ciDate)-new Date())/86400000);
-    await sendMessage(from, `❌ *CANCEL?*\n\nVoucher: *${b.voucherNo}*\nGuest: ${b.guestName}\nCheck-in: ${fmtDate(b.ciDate)}\n\n${daysLeft>15?"✅ Full refund":"❌ No refund"}\n\nYES / NO`);
-    return;
-  }
-  if (session.step === "awaiting_cancel_confirm") {
-    if (["YES","Y","HAAN","HA"].includes(t)) {
-      const voucherNo=session.cancelVoucherNo; const booking=pendingPayments[from];
-      if (!booking) { await sendMessage(from,`Booking not found. 📞 +91 98160 03322`); session.step="idle"; return; }
-      const daysLeft=Math.round((new Date(booking.ciDate)-new Date())/86400000);
-      const refund=daysLeft>15?booking.paidSoFar||booking.amount||0:0;
-      pendingCancellations[voucherNo]={agentPhone:from,agentName:agent.name,guestName:booking.guestName,ciDate:booking.ciDate,coDate:booking.coDate,voucherNo,advancePaid:booking.paidSoFar||booking.amount||0,refundAmount:refund,daysLeft,stayezeeId:booking.stayezeeId};
-      await sendMessage(from,`✅ Cancellation request submitted!\nVoucher: *${voucherNo}*\nPending admin approval. 🙏`);
-      await sendReminder(ADMIN_PHONE, `❌ *CANCEL REQUEST*\n\nAgent: ${agent.name} (${from})\nVoucher: *${voucherNo}*\nGuest: ${booking.guestName}\nCheck-in: ${fmtDate(booking.ciDate)}\nAdvance: Rs.${(booking.paidSoFar||booking.amount||0).toLocaleString()}\nDays left: ${daysLeft}\nRefund: ${daysLeft>15?`Rs.${refund.toLocaleString()} (Full)`:"No refund"}\n\nAPPROVE CANCEL ${voucherNo}\nREJECT CANCEL ${voucherNo}`);
-      session.step="idle"; delete session.cancelVoucherNo; delete session.cancelOptions;
-    } else if (["NO","N","NAHI"].includes(t)) {
-      await sendMessage(from,`Booking still active. 🙏`);
-      session.step="idle"; delete session.cancelVoucherNo; delete session.cancelOptions;
-    }
-    return;
-  }
 
   // Step: awaiting guest name
   if (session.step === "awaiting_guest_name") {
@@ -214,18 +169,18 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
     return;
   }
 
-  // Step: awaiting extra bed — CWB/CNB/FREE/NO supported
+  // Step: awaiting extra bed
   if (session.step === "awaiting_extra_bed") {
-    const isCWB=["1","CWB","EXTRA","EXTRA PERSON","EXTRA BED","MATTRESS","EB"].includes(t);
-    const isCNB=["2","CNB","CHILD NO BED","NO BED","CHILD"].includes(t)||t.startsWith("CNB");
-    const isFree=["3","FREE","CHILD FREE","UNDER 5","BABY","0"].includes(t);
-    const isNo=["4","NO","NONE","N","NOT NEEDED"].includes(t);
-    if(isCWB){session.extraBed=1;session.extraBedCharge=getExtraPersonCharge(session.plan);session.extraBedType="Extra person (above 10 yrs) with mattress";}
-    else if(isCNB){session.extraBed=1;session.extraBedCharge=getChildNoBedCharge(session.plan);session.extraBedType="Child no bed (6 to 10 yrs)";}
-    else if(isFree){session.extraBed=1;session.extraBedCharge=0;session.extraBedType="Child (under 5 yrs)";}
-    else if(isNo){session.extraBed=0;session.extraBedCharge=0;session.extraBedType=null;}
-    else{await sendMessage(from,`Please reply:\n*1* or *CWB* — Extra person\n*2* or *CNB* — Child no bed\n*3* or *FREE* — Child under 5 (free)\n*4* or *NO* — No extra bed`);return;}
-    session.step="idle";
+    if (t === "1") {
+      session.extraBed = 1; session.extraBedCharge = getExtraPersonCharge(session.plan); session.extraBedType = "Extra person (above 10 yrs) with mattress";
+    } else if (t === "2") {
+      session.extraBed = 1; session.extraBedCharge = getChildNoBedCharge(session.plan); session.extraBedType = "Child no bed (6 to 10 yrs)";
+    } else if (t === "3") {
+      session.extraBed = 1; session.extraBedCharge = 0; session.extraBedType = "Child (under 5 yrs)";
+    } else {
+      session.extraBed = 0; session.extraBedCharge = 0; session.extraBedType = null;
+    }
+    session.step = "idle";
     await confirmAndSave(from, agent, session);
     return;
   }
@@ -586,13 +541,12 @@ async function checkAndRespond(from, agent, session) {
         ? session.roomTypes
         : [{ type: session.roomType || "deluxe", count: session.rooms }];
 
-      // Skip tally for guest bookings
-      const isGuestBooking = session.isGuestBooking || false;
-      const tally = isGuestBooking ? { roomsBooked:0, freeRoomsUsed:0 } : await getTally(from);
+      // Get cumulative tally for this agent (financial year)
+      const tally = await getTally(from);
       const totalRoomsThisBooking = roomTypesList.reduce((s, r) => s + r.count, 0);
-      const roomsAfterBooking = isGuestBooking ? 0 : tally.roomsBooked + totalRoomsThisBooking;
-      const freeRoomsAvailable = isGuestBooking ? 0 : Math.floor(tally.roomsBooked / 10) - (tally.freeRoomsUsed || 0);
-      const newFreeRoomsEarned = isGuestBooking ? 0 : Math.floor(roomsAfterBooking / 10) - Math.floor(tally.roomsBooked / 10);
+      const roomsAfterBooking = tally.roomsBooked + totalRoomsThisBooking;
+      const freeRoomsAvailable = Math.floor(tally.roomsBooked / 10) - (tally.freeRoomsUsed || 0);
+      const newFreeRoomsEarned = Math.floor(roomsAfterBooking / 10) - Math.floor(tally.roomsBooked / 10);
 
       // Free rooms to apply = available + newly earned
       const freeRoomsToApply = freeRoomsAvailable + newFreeRoomsEarned;
@@ -804,15 +758,8 @@ async function confirmAndSave(from, agent, session) {
     const roomTotal = rate * rooms * nights;
     const freeRoomDiscount = session.freeRoomDiscount || 0;
     const freeRoomsApplied = session.freeRoomsApplied || 0;
-    const isGuestBook = session.isGuestBooking || false;
-    const grandTotal = session.grandTotal ? session.grandTotal + extraCharge - freeRoomDiscount : roomTotal + extraCharge - freeRoomDiscount;
-    const roomTypesList2 = session.roomTypes && session.roomTypes.length > 1 ? session.roomTypes : null;
-    const roomsDisplay = roomTypesList2
-      ? roomTypesList2.map(r=>`${r.count} x ${r.type==="honeymoon"?"Honeymoon":r.type==="superdeluxe"?"Super Deluxe":"Deluxe"}`).join(" + ")
-      : `${rooms} x ${pmsRoomType}`;
-    const typeName = roomTypesList2
-      ? roomTypesList2.map(r=>r.type==="honeymoon"?"Honeymoon":r.type==="superdeluxe"?"Super Deluxe":"Deluxe").join(" + ")
-      : pmsRoomType;
+    const grandTotal = roomTotal + extraCharge - freeRoomDiscount;
+    const typeName = pmsRoomType;
 
     // Generate voucher number
     const now = new Date();
@@ -839,7 +786,7 @@ async function confirmAndSave(from, agent, session) {
       `Check-in:  *${fmtDate(session.ciDate)}*\n` +
       `Check-out: *${fmtDate(session.coDate)}*\n` +
       `Nights:    *${nights}*\n` +
-      `Rooms:     *${roomsDisplay}*\n` +
+      `Rooms:     *${rooms} x ${typeName}*\n` +
       `Adults:    *${session.adults || 1}*\n` +
       `Kids:      *${session.kids || 0}${session.kidAges ? ` (${session.kidAges.join(", ")} yrs)` : ""}*\n` +
       `Plan:      *${session.plan}*\n`;
@@ -972,13 +919,12 @@ async function confirmAndSave(from, agent, session) {
       `Check-in: ${fmtDate(session.ciDate)}\n` +
       `Check-out: ${fmtDate(session.coDate)}\n` +
       `Nights: ${nights}\n` +
-      `Rooms: ${roomsDisplay}\n` +
+      `Rooms: ${rooms} x ${typeName}\n` +
       `Plan: ${session.plan}\n` +
       `Total: Rs.${Math.round(grandTotal).toLocaleString()}`;
 
-    // Update tally — skip for guest bookings
+    // Update financial year tally
     try {
-      if (session.isGuestBooking) throw new Error("skip");
       const tallyResult = await updateTally(from, agent.name, rooms);
       if (session.freeRoomsApplied > 0) {
         await useFreeRooms(from, agent.name, session.freeRoomsApplied);
@@ -1064,21 +1010,15 @@ async function confirmAndSave(from, agent, session) {
         ciDate: session.ciDate,
         coDate: session.coDate,
         guestName: session.guestName,
-        roomType: session.roomType || "deluxe",
-        rooms: session.rooms || 1,
-        roomTypes: session.roomTypes || null,
-        plan: session.plan || "CP",
-        advancePaidByAdmin: session.advancePaidByAdmin || 0,
-        secondPaymentAmount: Math.round(total * 0.35),
         paymentSchedule,
         daysToCheckin,
         paidSoFar: 0,
-        paymentStep: 1,
-        stayezeeId: session.stayezeeId || null,
+        paymentStep: 1, // 1=first, 2=second, 3=final
+        stayezeeId: session.stayezeeId || null, // for cancellation
       };
 
       // Send QR for first payment
-      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=1000x1000&ecc=H&margin=2&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${firstAmount}%26cu=INR%26tn=Advance-${voucherNo}`;
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${firstAmount}%26cu=INR%26tn=Advance-${voucherNo}`;
       const axios = require("axios");
 
       await axios.post(
@@ -1121,7 +1061,7 @@ async function confirmAndSave(from, agent, session) {
 
             if (!isFinal) {
               // Send payment reminder with QR
-              const reminderQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=1000x1000&ecc=H&margin=2&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${firstAmount}%26cu=INR%26tn=Advance-${voucherNo}`;
+              const reminderQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${firstAmount}%26cu=INR%26tn=Advance-${voucherNo}`;
               const axiosLib = require("axios");
               await axiosLib.post(
                 `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
@@ -1598,292 +1538,386 @@ async function handleGuest(from, text, t, btnId = null) {
 }
 
 async function handleAdminReply(from, text, t) {
-
   // APPROVE PAY 919XXXXXXXXX 5000
-  if (t.startsWith("APPROVE PAY") || (t.startsWith("APPROVE ") && /91\d{10}/.test(t))) {
+  if (t.startsWith("APPROVE PAY")) {
     const parts = text.trim().split(/\s+/);
-    const agentPhone = parts[2]?.replace(/\D/g,"");
+    const agentPhone = parts[2];
     const amount = parseInt(parts[3]);
     const pending = pendingPayments[agentPhone];
-    if (!pending) { await sendMessage(from, `No pending payment found for ${agentPhone}`); return; }
-    const UPI_ID = process.env.UPI_ID || "9816003322@okbizaxis";
+    if (!pending) {
+      await sendMessage(from, `No pending payment found for ${agentPhone}`);
+      return;
+    }
+
     const approvedAmount = amount || pending.amount;
     const paidSoFar = (pending.paidSoFar || 0) + approvedAmount;
     const remaining = pending.total - paidSoFar;
     const step = pending.paymentStep || 1;
-    await sendMessage(from, `✅ Payment approved for ${pending.agentName} (${agentPhone})\nPaid: Rs.${approvedAmount.toLocaleString()} | Total: Rs.${paidSoFar.toLocaleString()}\nVoucher: ${pending.voucherNo}\nRemaining: Rs.${Math.max(0,remaining).toLocaleString()}`);
-    let agentMsg = `✅ *PAYMENT CONFIRMED*\n\nVoucher: *${pending.voucherNo}*\nAmount: *Rs.${approvedAmount.toLocaleString()}*\nTotal Paid: Rs.${paidSoFar.toLocaleString()}\nTotal: Rs.${pending.total.toLocaleString()}\nRemaining: *Rs.${Math.max(0,remaining).toLocaleString()}*\n\n`;
+    const UPI_ID = process.env.UPI_ID || "9816003322@okbizaxis";
+
+    // Notify admin
+    await sendMessage(from,
+      `✅ Payment Step ${step} approved for ${pending.agentName} (${agentPhone})\n` +
+      `Paid: Rs.${approvedAmount.toLocaleString()} | Total Paid: Rs.${paidSoFar.toLocaleString()}\n` +
+      `Voucher: ${pending.voucherNo}\nRemaining: Rs.${remaining.toLocaleString()}`
+    );
+
+    // Build next payment message for agent
+    let agentMsg =
+      `✅ *PAYMENT CONFIRMED*\n\n` +
+      `Voucher: *${pending.voucherNo}*\n` +
+      `Amount Received: *Rs.${approvedAmount.toLocaleString()}*\n` +
+      `Total Paid: Rs.${paidSoFar.toLocaleString()}\n` +
+      `Total Booking: Rs.${pending.total.toLocaleString()}\n` +
+      `Remaining: *Rs.${remaining.toLocaleString()}*\n\n`;
+
     if (remaining <= 0) {
-      agentMsg += `🎉 All payments complete! Booking confirmed.\nCheck-in: ${fmtDate(pending.ciDate)}\nThank you! 🙏`;
+      agentMsg += `🎉 All payments complete! Booking fully confirmed.\n`;
+      agentMsg += `Check-in: ${fmtDate(pending.ciDate)}\nCheck-out: ${fmtDate(pending.coDate)}\n\nThank you! 🙏`;
       await sendReminder(agentPhone, agentMsg);
-      // Send guest voucher + location
-      try {
-        const nights2 = Math.round((new Date(pending.coDate)-new Date(pending.ciDate))/86400000);
-        const roomDisplay = pending.roomTypes && pending.roomTypes.length > 1
-          ? pending.roomTypes.map(r=>`${r.count} x ${r.type==="honeymoon"?"Honeymoon":r.type==="superdeluxe"?"Super Deluxe":"Deluxe"}`).join(" + ")
-          : `${pending.rooms||1} x ${pending.roomType||"Deluxe"}`;
-        const guestVoucher =
-          `🏨 *HOTEL SUKHSAGAR REGENCY*\nShimla, Himachal Pradesh\n📞 +91 98160 03322\n` +
-          `━━━━━━━━━━━━━━━━━━━━━\n📋 *GUEST BOOKING VOUCHER*\n━━━━━━━━━━━━━━━━━━━━━\n\n` +
-          `Voucher No: *${pending.voucherNo}*\nDate: *${fmtDate(new Date().toISOString().split("T")[0])}*\n\n` +
-          `*GUEST DETAILS*\nName: *${pending.guestName}*\n\n` +
-          `*BOOKING DETAILS*\nCheck-in:  *${fmtDate(pending.ciDate)}*\nCheck-out: *${fmtDate(pending.coDate)}*\nNights:    *${nights2}*\nRooms:     *${roomDisplay}*\nPlan:      *${pending.plan||"CP"}*\n\n` +
-          (pending.advancePaidByAdmin > 0 ? `*PAYMENT*\nAdvance Paid: Rs.${pending.advancePaidByAdmin.toLocaleString()}\nBalance at Check-in: Rs.${Math.max(0, pending.total - pending.advancePaidByAdmin).toLocaleString()}\n\n` : "") +
-          `*HOTEL POLICIES*\n✅ Check-in: 12:00 PM | Check-out: 11:00 AM\n✅ Valid ID required\n✅ WiFi, Parking, Welcome drink\n\n` +
-          `━━━━━━━━━━━━━━━━━━━━━\n_Please carry a valid photo ID._\n\n` +
-          `📍 Tara Devi, Shimla - 171010\nMaps: https://maps.google.com/?q=31.078199,77.140404`;
-        await sendMessage(agentPhone, `📄 *Guest Voucher* (forward to guest):\n\n` + guestVoucher);
-        const axios = require("axios");
-        await axios.post(`https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
-          { messaging_product:"whatsapp", recipient_type:"individual", to:agentPhone, type:"location",
-            location:{ longitude:77.140404, latitude:31.078199, name:"Hotel Sukhsagar Regency", address:"Tara Devi, Shimla 171010" }},
-          { headers:{ Authorization:`Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type":"application/json" }}
-        );
-      } catch(e) { console.error("Guest voucher error:", e.message); }
       delete pendingPayments[agentPhone];
     } else {
+      // Determine next payment details
       const schedule = pending.paymentSchedule || [];
-      const nextStep = schedule[step];
+      const nextStep = schedule[step]; // step is 0-indexed after first payment
       if (nextStep) {
-        agentMsg += `📅 *Next:* ${nextStep.label}: Rs.${nextStep.amount.toLocaleString()} — ${nextStep.due}\nThank you! 🙏`;
+        agentMsg += `📅 *Next Payment:*\n${nextStep.label}: Rs.${nextStep.amount.toLocaleString()} — ${nextStep.due}\n\n`;
+        agentMsg += `Check-in: ${fmtDate(pending.ciDate)}\nThank you, ${pending.agentName}! 🙏`;
+        await sendReminder(agentPhone, agentMsg);
+
+        // Send QR for next payment if it's due soon (2nd payment for short-notice bookings)
         if (pending.daysToCheckin < 15 && step === 1) {
-          agentMsg += `\n\n💡 Balance Rs.${remaining.toLocaleString()} due at check-in.`;
+          // Short notice — send final QR immediately
+          const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=upi://pay?pa=${UPI_ID}%26pn=Hotel%20Sukhsagar%20Regency%26am=${nextStep.amount}%26cu=INR%26tn=Final-${pending.voucherNo}`;
+          const axios = require("axios");
+          await axios.post(
+            `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
+            {
+              messaging_product: "whatsapp",
+              recipient_type: "individual",
+              to: agentPhone,
+              type: "image",
+              image: {
+                link: qrUrl,
+                caption:
+                  `💳 *FINAL PAYMENT — At Check-in*\n\n` +
+                  `Voucher: *${pending.voucherNo}*\n` +
+                  `Amount: *Rs.${nextStep.amount.toLocaleString()}*\n` +
+                  `UPI ID: *${UPI_ID}*\n\n` +
+                  `Please pay at check-in.`
+              }
+            },
+            { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
+          );
         }
       } else {
-        agentMsg += `💡 Rs.${remaining.toLocaleString()} due at check-in. Thank you! 🙏`;
+        agentMsg += `Remaining Rs.${remaining.toLocaleString()} to be paid at check-in.\n\nThank you! 🙏`;
+        await sendReminder(agentPhone, agentMsg);
       }
-      await sendReminder(agentPhone, agentMsg);
-      pendingPayments[agentPhone] = { ...pending, paidSoFar, amount:nextStep?.amount||remaining, remaining, paymentStep:step+1 };
+
+      // Update pending payment
+      pendingPayments[agentPhone] = {
+        ...pending,
+        paidSoFar,
+        amount: nextStep?.amount || remaining,
+        remaining,
+        paymentStep: step + 1,
+      };
     }
     return;
   }
 
-  // REJECT PAY
-  if (t.startsWith("REJECT PAY") || t.startsWith("REJECT ") && /91\d{10}/.test(t)) {
+  // REJECT PAY 919XXXXXXXXX
+  if (t.startsWith("REJECT PAY")) {
     const parts = text.trim().split(/\s+/);
-    const agentPhone = parts[2]?.replace(/\D/g,"");
+    const agentPhone = parts[2];
     const pending = pendingPayments[agentPhone];
-    if (!pending) { await sendMessage(from, `No pending payment for ${agentPhone}`); return; }
-    await sendMessage(from, `❌ Payment rejected for ${pending.agentName}`);
-    await sendReminder(agentPhone, `❌ *PAYMENT NOT CONFIRMED*\n\nVoucher: ${pending.voucherNo}\nPlease resend screenshot or contact hotel:\n📞 +91 98160 03322`);
+    if (!pending) {
+      await sendMessage(from, `No pending payment found for ${agentPhone}`);
+      return;
+    }
+    await sendMessage(from, `❌ Payment rejected for ${pending.agentName} (${agentPhone})`);
+    await sendReminder(agentPhone,
+      `❌ *PAYMENT NOT CONFIRMED*\n\n` +
+      `Voucher: ${pending.voucherNo}\n` +
+      `Your payment screenshot could not be verified.\n\n` +
+      `Please resend the screenshot or contact hotel:\n📞 +91 98160 03322`
+    );
     delete pendingPayments[agentPhone];
-    return;
-  }
-
-  // PAY RECEIVED 919XXXXXXXXX 5000
-  if (t.startsWith("PAY RECEIVED") || t.startsWith("PAYMENT RECEIVED") || t.startsWith("PAY REC")) {
-    const parts = text.trim().split(/\s+/);
-    const agentPhone = parts.find((p,i)=>i>0&&/^91\d{10,}$/.test(p.replace(/\D/g,"")))?.replace(/\D/g,"");
-    const amount = parseInt(parts.find((p,i)=>i>0&&/^\d{3,6}$/.test(p))||"0");
-    if (!agentPhone) { await sendMessage(from, `Format: *PAY RECEIVED 919XXXXXXXXX 5000*`); return; }
-    const pending = pendingPayments[agentPhone];
-    if (!pending) { await sendMessage(from, `✅ Payment of Rs.${amount.toLocaleString()} noted. No active booking found.`); return; }
-    const paidSoFar = (pending.paidSoFar||0) + amount;
-    const remaining = pending.total - paidSoFar;
-    pendingPayments[agentPhone] = {...pending, paidSoFar, remaining};
-    await sendMessage(from, `✅ Payment recorded:\n${pending.agentName} | ${pending.voucherNo}\nPaid: Rs.${amount.toLocaleString()} | Total: Rs.${paidSoFar.toLocaleString()}\nRemaining: Rs.${Math.max(0,remaining).toLocaleString()}`);
-    await sendReminder(agentPhone, `✅ *PAYMENT RECEIVED*\n\nVoucher: *${pending.voucherNo}*\nAmount: *Rs.${amount.toLocaleString()}*\nTotal Paid: Rs.${paidSoFar.toLocaleString()}\nRemaining: *Rs.${Math.max(0,remaining).toLocaleString()}*\n\n${remaining<=0?"🎉 All payments done!":"💡 Rs."+remaining.toLocaleString()+" due at check-in."}\n\nThank you! 🙏`);
-    if (remaining<=0) delete pendingPayments[agentPhone];
     return;
   }
 
   // SEND REMINDER 919XXXXXXXXX — manually send 2nd payment QR
   if (t.startsWith("SEND REMINDER")) {
-    const agentPhone = text.trim().split(/\s+/)[2]?.replace(/\D/g,"");
+    const parts = text.trim().split(/\s+/);
+    const agentPhone = parts[2]?.replace(/\D/g, "");
     const pending = agentPhone ? pendingPayments[agentPhone] : null;
-    if (!pending) { await sendMessage(from, `No pending payment for ${agentPhone||"that number"}\nUSE: *SEND REMINDER 919XXXXXXXXX*`); return; }
+    if (!pending) {
+      await sendMessage(from, `No pending payment found for ${agentPhone || "that number"}\n\nUSE: *SEND REMINDER 919XXXXXXXXX*`);
+      return;
+    }
     const UPI_ID = process.env.UPI_ID || "9816003322@okbizaxis";
     const secondAmt = pending.secondPaymentAmount || Math.round(pending.total * 0.35);
     const upiLink = `upi://pay?pa=${UPI_ID}&pn=Hotel%20Sukhsagar%20Regency&am=${secondAmt}&cu=INR&tn=2nd-${pending.voucherNo}`;
     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=1000x1000&ecc=H&margin=2&data=${encodeURIComponent(upiLink)}`;
     const axios = require("axios");
     try {
-      await axios.post(`https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
-        { messaging_product:"whatsapp", recipient_type:"individual", to:agentPhone, type:"image",
-          image:{ link:qrUrl, caption:`⏰ *2ND PAYMENT REMINDER*\n\nVoucher: *${pending.voucherNo}*\nGuest: ${pending.guestName}\nCheck-in: *${fmtDate(pending.ciDate)}*\n\n2nd Payment (35%): *Rs.${secondAmt.toLocaleString()}*\nUPI ID: *${UPI_ID}*\n\n📸 Pay and send screenshot.` }},
-        { headers:{ Authorization:`Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type":"application/json" }}
+      await axios.post(
+        `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
+        {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: agentPhone,
+          type: "image",
+          image: {
+            link: qrUrl,
+            caption:
+              `⏰ *2ND PAYMENT REMINDER*\n\n` +
+              `Voucher: *${pending.voucherNo}*\n` +
+              `Guest: ${pending.guestName}\n` +
+              `Check-in: *${fmtDate(pending.ciDate)}*\n\n` +
+              `2nd Payment (35%): *Rs.${secondAmt.toLocaleString()}*\n` +
+              `Total Booking: Rs.${pending.total.toLocaleString()}\n` +
+              `UPI ID: *${UPI_ID}*\n\n` +
+              `📸 Please pay and send screenshot.`
+          }
+        },
+        { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
       );
-      await sendReminder(agentPhone, `💡 UPI ID: *${UPI_ID}*\nAmount: *Rs.${secondAmt.toLocaleString()}*\nVoucher: ${pending.voucherNo}`);
+      // Also send UPI text
+      await sendReminder(agentPhone,
+        `💡 *Payment Details:*\nUPI ID: *${UPI_ID}*\nAmount: *Rs.${secondAmt.toLocaleString()}*\nVoucher: ${pending.voucherNo}`
+      );
       pendingPayments[agentPhone].paymentStep = 2;
       await sendMessage(from, `✅ 2nd payment reminder sent to ${agentPhone}\nAmount: Rs.${secondAmt.toLocaleString()}`);
-    } catch(e) { await sendMessage(from, `❌ Failed: ${e.message}`); }
+    } catch(e) {
+      await sendMessage(from, `❌ Failed to send reminder: ${e.message}`);
+    }
     return;
   }
 
-  // APPROVE CANCEL <voucherNo>
-  if (t.startsWith("APPROVE CANCEL") || t.startsWith("YES CANCEL") || t.startsWith("OK CANCEL")) {
-    const voucherNo = text.trim().split(/\s+/).pop();
-    const cancel = pendingCancellations[voucherNo];
-    if (!cancel) { await sendMessage(from, `No cancellation found for ${voucherNo}`); return; }
-    if (cancel.stayezeeId) { try { await cancelReservation(cancel.stayezeeId); } catch(e){} }
-    delete pendingPayments[cancel.agentPhone];
-    delete pendingCancellations[voucherNo];
-    await sendMessage(from, `✅ Cancelled: ${voucherNo} | ${cancel.agentName}\nRefund: ${cancel.daysLeft>15?`Rs.${cancel.refundAmount.toLocaleString()} (Full)`:"No refund"}`);
-    await sendReminder(cancel.agentPhone, `✅ *BOOKING CANCELLED*\n\nVoucher: *${voucherNo}*\nGuest: ${cancel.guestName}\n\n${cancel.daysLeft>15?`💰 Refund: Rs.${cancel.refundAmount.toLocaleString()}`:"❌ No refund (within 15 days)"}\n\nThank you! 🙏`);
-    return;
-  }
-
-  // REJECT CANCEL <voucherNo>
-  if (t.startsWith("REJECT CANCEL") || t.startsWith("NO CANCEL")) {
-    const voucherNo = text.trim().split(/\s+/).pop();
-    const cancel = pendingCancellations[voucherNo];
-    if (!cancel) { await sendMessage(from, `No cancellation for ${voucherNo}`); return; }
-    delete pendingCancellations[voucherNo];
-    await sendMessage(from, `❌ Rejected: ${voucherNo}`);
-    await sendReminder(cancel.agentPhone, `❌ *CANCELLATION REJECTED*\n\nVoucher: *${voucherNo}*\nBooking still active.\n📞 +91 98160 03322`);
-    return;
-  }
-
-  // LIST CANCEL
-  if (t === "LIST CANCEL") {
-    const keys = Object.keys(pendingCancellations);
-    if (!keys.length) { await sendMessage(from, "No pending cancellations."); return; }
-    await sendMessage(from, `📋 *Pending Cancellations:*\n\n${keys.map(k=>`• ${k} — ${pendingCancellations[k].guestName} (${pendingCancellations[k].agentName})`).join("\n")}`);
-    return;
-  }
-
-  // LIST PAY
+  // LIST PAY — show all pending payments
   if (t === "LIST PAY") {
     const keys = Object.keys(pendingPayments);
-    if (!keys.length) { await sendMessage(from, "No pending payments."); return; }
-    const lines = keys.map(k => { const p=pendingPayments[k]; return `• ${p.agentName} (${k})\nVoucher: ${p.voucherNo} | Due: Rs.${p.amount.toLocaleString()}`; });
+    if (keys.length === 0) {
+      await sendMessage(from, "No pending payments.");
+      return;
+    }
+    const lines = keys.map(k => {
+      const p = pendingPayments[k];
+      return `• ${p.agentName} (${k})\nVoucher: ${p.voucherNo}\nAmount: Rs.${p.amount.toLocaleString()}`;
+    });
     await sendMessage(from, `📋 *Pending Payments (${keys.length}):*\n\n${lines.join("\n\n")}`);
     return;
   }
 
-  // ADD AGENT
-  if (t.startsWith("ADD AGENT")) {
-    const parts = text.trim().split(/\s+/);
-    const phone = parts[2]?.replace(/\D/g,"");
-    const category = parts[parts.length-1]?.toUpperCase();
-    const name = parts.slice(3, parts.length-1).join(" ") || "Agent";
-    if (!phone||phone.length<10) { await sendMessage(from, `Format: *ADD AGENT 919XXXXXXXXX Name A*`); return; }
-    const { addAgent } = require("./agents");
-    const result = await addAgent(phone, name, ["A","B","C"].includes(category)?category:"C");
-    await sendMessage(from, result.message);
-    return;
-  }
-
-  // REMOVE AGENT
-  if (t.startsWith("REMOVE AGENT")) {
-    const phone = text.trim().split(/\s+/)[2]?.replace(/\D/g,"");
-    if (!phone) { await sendMessage(from, `Format: *REMOVE AGENT 919XXXXXXXXX*`); return; }
-    const { removeAgent } = require("./agents");
-    const result = await removeAgent(phone);
-    await sendMessage(from, result.message);
-    return;
-  }
-
-  // LIST AGENTS
-  if (t === "LIST AGENTS") {
-    const { listAgents } = require("./agents");
-    const result = await listAgents();
-    await sendMessage(from, result);
-    return;
-  }
-
-  // BOOK1/BOOK2/BOOK — admin booking with ADV support
+  // BOOK/BOOK1/BOOK2 with full smart parser + ADV support
   const isBook1 = t.startsWith("BOOK1 ");
   const isBook2 = t.startsWith("BOOK2 ");
   const isBook = t.startsWith("BOOK ") || isBook1 || isBook2;
   if (isBook) {
-    if (isBook1||isBook2) text = "BOOK " + text.slice(6);
+    if (isBook1 || isBook2) text = "BOOK " + text.slice(6);
     try {
-      const parts = text.trim().split(/\s+/);
-      const guestPhone = parts[1].replace(/\D/g,"");
-      const fullPhone = guestPhone.startsWith("91")?guestPhone:"91"+guestPhone;
-      const afterPhone = parts.slice(2).join(" ");
+      const rawParts = text.trim().split(/\s+/);
+      const guestPhone = rawParts[1].replace(/\D/g, "");
+      const fullPhone = guestPhone.startsWith("91") ? guestPhone : "91" + guestPhone;
+      const afterPhone = rawParts.slice(2).join(" ");
 
-      // Extract REMARK
+      // ── Step 1: Extract REMARK (everything after REMARK keyword) ──
       const remarkMatch = afterPhone.match(/REMARK\s+(.+)$/i);
       const remark = remarkMatch ? remarkMatch[1].trim() : null;
-      let textNoRemark = remarkMatch ? afterPhone.slice(0,remarkMatch.index).trim() : afterPhone;
+      let clean = remarkMatch ? afterPhone.slice(0, remarkMatch.index).trim() : afterPhone;
 
-      // Extract ADV (advance already received)
-      const advMatch = textNoRemark.match(/ADV\s+(\d+)/i) || textNoRemark.match(/ADVANCE\s+(\d+)/i) || textNoRemark.match(/PAID\s+(\d+)/i);
+      // ── Step 2: Extract ADV (advance already received) ──────────
+      // Must be done BEFORE rate detection so ADV amount isn't picked as rate
+      const advMatch = clean.match(/ADV(?:ANCE)?\s+(\d+)/i) || clean.match(/PAID\s+(\d+)/i);
       const advancePaid = advMatch ? parseInt(advMatch[1]) : 0;
-      if (advMatch) textNoRemark = textNoRemark.replace(advMatch[0], "").trim();
+      if (advMatch) clean = clean.replace(advMatch[0], "").trim();
 
-      // Extract rate (last number)
+      // ── Step 3: Extract rate (last number after removing ADV) ────
       let adminRate = null;
-      const rateKwMatch = textNoRemark.match(/(?:@|rs\.?\s*|rate\s*|price\s*)(\d{3,6})/i);
-      if (rateKwMatch) { adminRate=parseInt(rateKwMatch[1]); }
-      if (!adminRate) { const tokens=textNoRemark.trim().split(/\s+/); const last=tokens[tokens.length-1].replace(/[^0-9]/g,""); if(/^\d{3,5}$/.test(last)){const n=parseInt(last);if(n>=500&&n<=50000)adminRate=n;} }
+      const rateKwMatch = clean.match(/(?:@|rs\.?\s*|rate\s*|price\s*)(\d{3,6})/i);
+      if (rateKwMatch) {
+        adminRate = parseInt(rateKwMatch[1]);
+      } else {
+        const tokens = clean.trim().split(/\s+/);
+        const last = tokens[tokens.length - 1].replace(/[^0-9]/g, "");
+        if (/^\d{3,5}$/.test(last)) {
+          const n = parseInt(last);
+          if (n >= 500 && n <= 50000) adminRate = n;
+        }
+      }
 
-      // Extract plan
-      let plan="CP"; const planM=textNoRemark.match(/(MAPAI|MAP|CPAI|CP|EP)/i); if(planM)plan=planM[1].toUpperCase();
+      // ── Step 4: Extract plan ─────────────────────────────────────
+      let plan = "CP";
+      const planM = clean.match(/(MAPAI|MAP|CPAI|CP|EP)/i);
+      if (planM) plan = planM[1].toUpperCase();
 
-      // Extract room types
-      const textForRooms=adminRate?textNoRemark.replace(String(adminRate),"").replace("@","").trim():textNoRemark;
-      let textForDlx=textForRooms.replace(/\d+\s*(?:super\s*del(?:uxe)?|sdelx?|sdlx?|superdeluxe|spdlx)/gi,"");
-      const superRe=/(\d+)\s*(?:super\s*del(?:uxe)?|sdelx?|sdlx?|superdeluxe|spdlx)/gi;
-      const honeyRe=/(\d+)\s*(?:honey(?:moon)?|hmoon|hm(?=\s|$|\d))/gi;
-      const dlxRe=/(\d+)\s*(?:del(?:uxe)?|dlx|delx)(?!\s*(?:super|sd))/gi;
-      let roomTypes=[],m;
-      superRe.lastIndex=0; while((m=superRe.exec(textForRooms))!==null) roomTypes.push({type:"superdeluxe",count:parseInt(m[1])});
-      honeyRe.lastIndex=0; while((m=honeyRe.exec(textForRooms))!==null) roomTypes.push({type:"honeymoon",count:parseInt(m[1])});
-      dlxRe.lastIndex=0; while((m=dlxRe.exec(textForDlx))!==null) roomTypes.push({type:"deluxe",count:parseInt(m[1])});
-      if(roomTypes.length===0){const rRe=/(\d+)\s*r(?:ooms?)?/gi;while((m=rRe.exec(textForRooms))!==null)roomTypes.push({type:"deluxe",count:parseInt(m[1])});}
-      let roomType="deluxe",rooms=1;
-      if(roomTypes.length>0){roomType=roomTypes[0].type;rooms=roomTypes.reduce((s,r)=>s+r.count,0);}
-      else{if(/super|sdelx|sdlx/i.test(textForRooms))roomType="superdeluxe";else if(/honey|hm/i.test(textForRooms))roomType="honeymoon";const gm=textForRooms.match(/(\d+)\s*(?:guest|pax|person|adult|people)/i);rooms=gm?Math.ceil(parseInt(gm[1])/3):1;}
+      // ── Step 5: Extract room types ───────────────────────────────
+      const textForRooms = adminRate ? clean.replace(String(adminRate), "").replace(/@/g, "").trim() : clean;
+      let textForDlx = textForRooms.replace(/\d+\s*(?:super\s*del(?:uxe)?|sdelx?|sdlx?|superdeluxe|spdlx)/gi, "");
+      const superRe = /(\d+)\s*(?:super\s*del(?:uxe)?|sdelx?|sdlx?|superdeluxe|spdlx)/gi;
+      const honeyRe = /(\d+)\s*(?:honey(?:moon)?|hmoon|hm(?=\s|$|\d))/gi;
+      const dlxRe   = /(\d+)\s*(?:del(?:uxe)?|dlx|delx)(?!\s*(?:super|sd))/gi;
+      let roomTypes = [], m;
+      superRe.lastIndex = 0; while ((m = superRe.exec(textForRooms)) !== null) roomTypes.push({ type: "superdeluxe", count: parseInt(m[1]) });
+      honeyRe.lastIndex = 0; while ((m = honeyRe.exec(textForRooms)) !== null) roomTypes.push({ type: "honeymoon", count: parseInt(m[1]) });
+      dlxRe.lastIndex = 0;   while ((m = dlxRe.exec(textForDlx))   !== null) roomTypes.push({ type: "deluxe", count: parseInt(m[1]) });
+      if (roomTypes.length === 0) {
+        const rRe = /(\d+)\s*r(?:ooms?)?/gi;
+        while ((m = rRe.exec(textForRooms)) !== null) roomTypes.push({ type: "deluxe", count: parseInt(m[1]) });
+      }
+      let roomType = "deluxe", rooms = 1;
+      if (roomTypes.length > 0) { roomType = roomTypes[0].type; rooms = roomTypes.reduce((s, r) => s + r.count, 0); }
+      else {
+        if (/super|sdelx|sdlx/i.test(textForRooms)) roomType = "superdeluxe";
+        else if (/honey|hm/i.test(textForRooms)) roomType = "honeymoon";
+        const gm = textForRooms.match(/(\d+)\s*(?:guest|pax|person|adult|people)/i);
+        rooms = gm ? Math.ceil(parseInt(gm[1]) / 3) : 1;
+      }
 
-      // Parse dates
-      const {parseEnquiry}=require("./parser");
-      const roomInfoForParser=roomTypes.length>1?roomTypes.map(r=>r.count+r.type).join(" ")+" "+plan:rooms+" "+roomType+" "+plan;
-      const parsed=parseEnquiry(textNoRemark+" "+roomInfoForParser);
-      if(!parsed?.ciDate||!parsed?.coDate){await sendMessage(from,`❌ Could not parse dates.\nFormat: *BOOK1 919... Rahul 22july 24july 2dlx CP 14400 ADV 3000*`);return;}
+      // ── Step 6: Parse dates ──────────────────────────────────────
+      const { parseEnquiry } = require("./parser");
+      const roomInfo = roomTypes.length > 1 ? roomTypes.map(r => r.count + r.type).join(" ") + " " + plan : rooms + " " + roomType + " " + plan;
+      const parsed = parseEnquiry(clean + " " + roomInfo);
+      if (!parsed?.ciDate || !parsed?.coDate) {
+        await sendMessage(from, `❌ Could not parse dates.
+Format: *BOOK1 919... Rahul 22july 24july 2dlx CP 14400 ADV 3000*`);
+        return;
+      }
 
-      // Guest name
-      const dateRe=/\d{1,2}[.\-\/]\d{1,2}|\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
-      const dateIdx=textNoRemark.search(dateRe);
-      let guestName=dateIdx>0?textNoRemark.slice(0,dateIdx).trim():"Guest";
-      guestName=guestName.replace(/(CP|MAP|MAPAI|EP|deluxe|dlx|super|sdlx|honey|hm|\d+)/gi,"").trim()||"Guest";
+      // ── Step 7: Guest name ───────────────────────────────────────
+      const dRe = /\d{1,2}[.\-\/]\d{1,2}|\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
+      const dIdx = clean.search(dRe);
+      let guestName = dIdx > 0 ? clean.slice(0, dIdx).trim() : "Guest";
+      guestName = guestName.replace(/(CP|MAP|MAPAI|EP|deluxe|dlx|super|sdlx|honey|hm|\d+)/gi, "").trim() || "Guest";
 
-      // Auto-add guest
-      const {getAgent:ga,addAgent:aa}=require("./agents");
-      let agent2=await ga(fullPhone);
-      if(!agent2){await aa(fullPhone,guestName,"Guest");agent2={phone:fullPhone,name:guestName,category:"Guest"};await sendMessage(from,`📋 ${guestName} (${fullPhone}) added as Guest`);}
+      // ── Step 8: Auto-add guest ───────────────────────────────────
+      const { getAgent: ga, addAgent: aa } = require("./agents");
+      let agent2 = await ga(fullPhone);
+      if (!agent2) {
+        await aa(fullPhone, guestName, "Guest");
+        agent2 = { phone: fullPhone, name: guestName, category: "Guest" };
+        await sendMessage(from, `📋 ${guestName} (${fullPhone}) added as Guest`);
+      }
 
-      // Rate
-      const nights=Math.max(1,Math.round((new Date(parsed.coDate)-new Date(parsed.ciDate))/86400000));
-      let grandTotal,finalRate,rateTypeLabel="";
-      if(adminRate){grandTotal=adminRate;finalRate=Math.round(adminRate/(rooms*nights));rateTypeLabel="(admin total)";}
-      else if(isBook1){const {getCustomerRate:gcr}=require("./rates");const ri=gcr(roomType,plan,parsed.ciDate);if(!ri){await sendMessage(from,`❌ Rate not found. Add total: *BOOK1 ... 14400*`);return;}finalRate=ri.rate;grandTotal=finalRate*rooms*nights;rateTypeLabel="(customer rate)";}
-      else{const {getRate:gr}=require("./rates");const ri=gr(roomType,plan,parsed.ciDate,agent2.category==="Guest"?"C":agent2.category);if(!ri){await sendMessage(from,`❌ Rate not found. Add total: *BOOK ... 14400*`);return;}finalRate=ri.rate;grandTotal=finalRate*rooms*nights;rateTypeLabel="(agent rate)";}
+      // ── Step 9: Calculate rate and total ────────────────────────
+      const nights = Math.max(1, Math.round((new Date(parsed.coDate) - new Date(parsed.ciDate)) / 86400000));
+      let grandTotal, finalRate, rateTypeLabel = "";
 
-      const balanceAtCheckin = advancePaid > 0 ? grandTotal - advancePaid : null;
-      const advanceAmount = advancePaid > 0 ? advancePaid : Math.round(grandTotal*0.20);
-      const roomSummary=roomTypes.length>1?roomTypes.map(r=>`${r.count} x ${r.type==="honeymoon"?"Honeymoon":r.type==="superdeluxe"?"Super Deluxe":"Deluxe"}`).join(" + "):`${rooms} x ${roomType==="honeymoon"?"Honeymoon":roomType==="superdeluxe"?"Super Deluxe":"Deluxe"}`;
-      const remarkText=remark?`\nRemark: _${remark}_`:"";
-      const advText = advancePaid>0 ? `\nAdvance Received: Rs.${advancePaid.toLocaleString()}\nBalance at Check-in: Rs.${Math.max(0,balanceAtCheckin).toLocaleString()}` : `\nAdvance (20%): Rs.${advanceAmount.toLocaleString()}`;
+      if (adminRate) {
+        // Admin put total amount directly
+        grandTotal = adminRate;
+        finalRate = Math.round(adminRate / (rooms * nights));
+        rateTypeLabel = "(admin total)";
+      } else if (isBook1) {
+        const { getCustomerRate } = require("./rates");
+        const ri = getCustomerRate(roomType, plan, parsed.ciDate);
+        if (!ri) { await sendMessage(from, `❌ Rate not found. Add total: *BOOK1 ... 14400*`); return; }
+        finalRate = ri.rate; grandTotal = finalRate * rooms * nights; rateTypeLabel = "(customer rate)";
+      } else {
+        const { getRate } = require("./rates");
+        const ri = getRate(roomType, plan, parsed.ciDate, agent2.category === "Guest" ? "C" : agent2.category);
+        if (!ri) { await sendMessage(from, `❌ Rate not found. Add total: *BOOK ... 14400*`); return; }
+        finalRate = ri.rate; grandTotal = finalRate * rooms * nights; rateTypeLabel = "(agent rate)";
+      }
 
-      const fakeSession={
-        ciDate:parsed.ciDate, coDate:parsed.coDate, roomType, rooms,
-        roomTypes:roomTypes.length>1?roomTypes:null,
-        plan:plan.toUpperCase(), rate:finalRate, grandTotal:Math.round(grandTotal),
-        nights, adults:parsed.adults||rooms*2, kids:0,
-        guestName, guestMobile:fullPhone,
-        extraBed:0, extraBedCharge:0, extraBedType:null,
-        remark, isGuestBooking:isBook1, advancePaidByAdmin:advancePaid,
+      const balanceAtCheckin = advancePaid > 0 ? Math.max(0, grandTotal - advancePaid) : null;
+      const advanceAmount = advancePaid > 0 ? advancePaid : Math.round(grandTotal * 0.20);
+      const roomSummary = roomTypes.length > 1
+        ? roomTypes.map(r => `${r.count} x ${r.type === "honeymoon" ? "Honeymoon" : r.type === "superdeluxe" ? "Super Deluxe" : "Deluxe"}`).join(" + ")
+        : `${rooms} x ${roomType === "honeymoon" ? "Honeymoon" : roomType === "superdeluxe" ? "Super Deluxe" : "Deluxe"}`;
+      const remarkText = remark ? `
+Remark: _${remark}_` : "";
+      const advText = advancePaid > 0
+        ? `
+Advance Received: Rs.${advancePaid.toLocaleString()}
+Balance at Check-in: Rs.${balanceAtCheckin.toLocaleString()}`
+        : `
+Advance (20%): Rs.${advanceAmount.toLocaleString()}`;
+
+      const fakeSession = {
+        ciDate: parsed.ciDate, coDate: parsed.coDate,
+        roomType, rooms, roomTypes: roomTypes.length > 1 ? roomTypes : null,
+        plan: plan.toUpperCase(), rate: finalRate, grandTotal: Math.round(grandTotal),
+        nights, adults: parsed.adults || rooms * 2, kids: 0,
+        guestName, guestMobile: fullPhone,
+        extraBed: 0, extraBedCharge: 0, extraBedType: null,
+        remark, isGuestBooking: isBook1,
+        advancePaidByAdmin: advancePaid,
       };
 
-      await sendMessage(from,`⏳ Creating for *${guestName}*...\n${fmtDate(parsed.ciDate)} → ${fmtDate(parsed.coDate)}\n${roomSummary} | ${plan}\nTotal: *Rs.${Math.round(grandTotal).toLocaleString()}* ${rateTypeLabel}${advText}${remarkText}`);
+      await sendMessage(from,
+        `⏳ Creating for *${guestName}*...
+` +
+        `${fmtDate(parsed.ciDate)} → ${fmtDate(parsed.coDate)}
+` +
+        `${roomSummary} | ${plan}
+` +
+        `Total: *Rs.${Math.round(grandTotal).toLocaleString()}* ${rateTypeLabel}` +
+        advText + remarkText
+      );
+
       await confirmAndSave(fullPhone, agent2, fakeSession);
-      await sendMessage(from,`✅ *Booking created!*\n\nGuest: ${guestName} (${fullPhone})\nCheck-in: ${fmtDate(parsed.ciDate)}\nCheck-out: ${fmtDate(parsed.coDate)}\nRooms: ${roomSummary}\nPlan: ${plan}\nTotal: *Rs.${Math.round(grandTotal).toLocaleString()}*${advText}${remarkText}\n\nVoucher + QR sent ✅`);
-    } catch(err){console.error("Admin BOOK error:",err.message);await sendMessage(from,`❌ Booking failed: ${err.message}`);}
+
+      await sendMessage(from,
+        `✅ *Booking created!*
+
+` +
+        `Guest: ${guestName} (${fullPhone})
+` +
+        `Check-in: ${fmtDate(parsed.ciDate)}
+` +
+        `Check-out: ${fmtDate(parsed.coDate)}
+` +
+        `Rooms: ${roomSummary}
+` +
+        `Plan: ${plan}
+` +
+        `Total: *Rs.${Math.round(grandTotal).toLocaleString()}*` +
+        advText + remarkText + `
+
+Voucher + QR sent ✅`
+      );
+    } catch (err) {
+      console.error("Admin BOOK error:", err.message);
+      await sendMessage(from, `❌ Booking failed: ${err.message}`);
+    }
     return;
   }
 
   await sendMessage(from,
-    `*Admin Commands:*\n\n` +
-    `*Booking:*\nBOOK1 919... Name 22july 24july 2dlx CP 14400 → Guest rates\n` +
-    `BOOK2 919... Name 22july 24july 2dlx CP 14400 → Agent rates\n` +
-    `Add ADV 3000 for advance already received\nAdd REMARK for notes\n\n` +
-    `*Payment:*\nPAY RECEIVED 91XXXXXXXXXX 5000\nAPPROVE PAY 91XXXXXXXXXX 5000\n` +
-    `REJECT PAY 91XXXXXXXXXX\nSEND REMINDER 91XXXXXXXXXX\nLIST PAY\n\n` +
-    `*Cancellation:*\nAPPROVE CANCEL SR-001\nREJECT CANCEL SR-001\nLIST CANCEL\n\n` +
-    `*Agents:*\nADD AGENT 91XXXXXXXXXX Name A/B/C\nREMOVE AGENT 91XXXXXXXXXX\nLIST AGENTS`
+    `*Admin Commands:*
+
+` +
+    `*Booking:*
+BOOK1 919... Name 22july 24july 2dlx CP 14400 → Guest rates
+` +
+    `BOOK2 919... Name 22july 24july 2dlx CP 14400 → Agent rates
+` +
+    `Add ADV 3000 for advance already received
+Add REMARK for notes
+
+` +
+    `*Payment:*
+PAY RECEIVED 91XXXXXXXXXX 5000
+APPROVE PAY 91XXXXXXXXXX 5000
+` +
+    `REJECT PAY 91XXXXXXXXXX
+SEND REMINDER 91XXXXXXXXXX
+LIST PAY
+
+` +
+    `*Cancellation:*
+APPROVE CANCEL SR-001
+REJECT CANCEL SR-001
+LIST CANCEL
+
+` +
+    `*Agents:*
+ADD AGENT 91XXXXXXXXXX Name A/B/C
+REMOVE AGENT 91XXXXXXXXXX
+LIST AGENTS`
   );
 }
 
@@ -1908,4 +1942,4 @@ async function safeHandleIncoming(args) {
   }
 }
 
-module.exports = { handleIncoming: safeHandleIncoming, pendingOptIns, optedInGuests, pendingPayments, pendingCancellations };
+module.exports = { handleIncoming: safeHandleIncoming, pendingOptIns, optedInGuests, pendingPayments };
