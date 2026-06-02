@@ -820,10 +820,50 @@ async function confirmAndSave(from, agent, session) {
 
     // Guests added by admin — use approved template (works for any number)
     // Agents — send full voucher text
-    // For admin-initiated bookings, send voucher to admin not guest
+    // For admin-initiated bookings, send voucher to admin + template to guest
     if (session.isGuestBooking) {
-      // Send full voucher to ADMIN (they forward to guest manually if needed)
+      // Send full voucher to ADMIN
       await sendReminder(ADMIN_PHONE, voucherMsg);
+
+      // Send approved template to guest mobile number
+      const guestMobile = session.guestMobile || from;
+      try {
+        const axios = require("axios");
+        const ciForDisplay = fmtDate(session.ciDate);
+        const coForDisplay = fmtDate(session.coDate);
+        const totalRooms = String(session.rooms || 1);
+        const planForDisplay = session.plan || "CP";
+        const totalAmount = String(Math.round(grandTotal));
+
+        await axios.post(
+          `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
+          {
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: guestMobile,
+            type: "template",
+            template: {
+              name: "hotel_confirmed",
+              language: { code: "en" },
+              components: [{
+                type: "body",
+                parameters: [
+                  { type: "text", text: ciForDisplay },
+                  { type: "text", text: coForDisplay },
+                  { type: "text", text: totalRooms },
+                  { type: "text", text: planForDisplay },
+                  { type: "text", text: totalAmount },
+                  { type: "text", text: confirmNo }
+                ]
+              }]
+            }
+          },
+          { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
+        );
+        console.log(`✓ hotel_confirmed template sent to guest ${guestMobile}`);
+      } catch(tplErr) {
+        console.error("Template send to guest failed:", tplErr.response?.data || tplErr.message);
+      }
     } else if (agent.category === "Guest") {
       await sendConfirmed(from, {
         ciDate: session.ciDate,
