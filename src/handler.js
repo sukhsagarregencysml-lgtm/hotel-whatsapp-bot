@@ -953,6 +953,7 @@ async function confirmAndSave(from, agent, session) {
     }
 
     // ── PAYMENT POLICY ──────────────────────────────────────────
+    // If admin already received advance (ADV), skip QR entirely
     // If check-in < 15 days away: 50% now + 50% at check-in
     // If check-in >= 15 days away: 25% token + 35% (15 days before) + 40% at check-in
     try {
@@ -962,6 +963,24 @@ async function confirmAndSave(from, agent, session) {
       const ciDate = new Date(session.ciDate);
       const daysToCheckin = Math.round((ciDate - today) / 86400000);
       const total = Math.round(grandTotal);
+
+      // If admin already received advance — just send confirmation, no QR
+      if (session.advancePaidByAdmin > 0) {
+        const balance = Math.max(0, total - session.advancePaidByAdmin);
+        await sendMessage(from,
+          `✅ *BOOKING CONFIRMED*\n\n` +
+          `Voucher: *${voucherNo}*\n` +
+          `Guest: ${session.guestName}\n` +
+          `Check-in: ${fmtDate(session.ciDate)}\n` +
+          `Check-out: ${fmtDate(session.coDate)}\n\n` +
+          `Total: Rs.${total.toLocaleString()}\n` +
+          `Advance Received: Rs.${session.advancePaidByAdmin.toLocaleString()}\n` +
+          `*Balance at Check-in: Rs.${balance.toLocaleString()}*\n\n` +
+          (session.remark ? `📝 Remark: ${session.remark}\n\n` : "") +
+          `No payment QR sent (advance already received). 🙏`
+        );
+        return; // Skip QR sending entirely
+      }
 
       let firstAmount, paymentSchedule, policyNote;
 
