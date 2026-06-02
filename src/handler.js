@@ -727,6 +727,8 @@ async function confirmAndSave(from, agent, session) {
       checkinDate: ciFormatted,
       checkoutDate: coFormatted,
       roomType: pmsRoomType,
+      remarks: session.remark || "",   // Pass remark to Stayezee
+      special_request: session.remark || "",
     });
 
     if (!stayezeeRes?.success) {
@@ -798,8 +800,7 @@ async function confirmAndSave(from, agent, session) {
     }
 
     voucherMsg +=
-      `\n*AMOUNT*\n` +
-      `Rate:  Rs.${Math.round(rate).toLocaleString()}/night\n`;
+      `\n*AMOUNT*\n`;
 
     if (extraCharge > 0) {
       voucherMsg += `Extra: Rs.${Math.round(extraCharge).toLocaleString()}\n`;

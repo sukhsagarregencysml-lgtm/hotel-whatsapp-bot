@@ -39,7 +39,7 @@ async function checkAvailability({ ciDate, coDate, rooms }) {
   }
 }
 
-async function saveReservation({ guestName, guestMobile, male, female, kids, plan, tariff, rooms, checkinDate, checkoutDate, roomType }) {
+async function saveReservation({ guestName, guestMobile, male, female, kids, plan, tariff, rooms, checkinDate, checkoutDate, roomType, remarks, special_request }) {
   console.log('Saving reservation to Stayezee:', guestName, checkinDate, checkoutDate);
   try {
     const form = new FormData();
@@ -54,6 +54,10 @@ async function saveReservation({ guestName, guestMobile, male, female, kids, pla
     form.append('checkin_date', checkinDate);
     form.append('checkout_date', checkoutDate);
     form.append('room_type', roomType || 'Deluxe');
+    if (remarks || special_request) {
+      form.append('remarks', remarks || special_request || '');
+      form.append('special_request', remarks || special_request || '');
+    }
 
     const res = await axios.post(
       'https://india.stayezeepms.co.in/FO/API/saveReservation',
@@ -76,24 +80,16 @@ async function saveReservation({ guestName, guestMobile, male, female, kids, pla
 }
 
 async function cancelReservation(reservationId) {
-  console.log('Cancelling reservation in Stayezee:', reservationId);
   try {
     const form = new FormData();
     form.append('reservation_id', String(reservationId));
-    form.append('cancel_reason', 'No payment received - auto cancelled by bot');
-
     const res = await axios.post(
       'https://india.stayezeepms.co.in/FO/API/cancelReservation',
       form,
-      {
-        headers: { 'X-Hotel-ID': HOTEL_ID, ...form.getHeaders() },
-        timeout: 15000,
-      }
+      { headers: { 'X-Hotel-ID': HOTEL_ID, ...form.getHeaders() }, timeout: 15000 }
     );
-    console.log('Stayezee cancelReservation response:', JSON.stringify(res.data));
     return { success: true, data: res.data };
   } catch (err) {
-    console.error('Stayezee cancelReservation error:', err.response?.data || err.message);
     return { success: false, error: err.message };
   }
 }
