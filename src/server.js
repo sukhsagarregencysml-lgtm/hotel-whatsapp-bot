@@ -228,12 +228,15 @@ app.post("/send-checkin", async (req, res) => {
     // Register guest for WhatsApp service requests
     registerGuestForServices(phone, guestName, hotelName, room, checkout, hotelId);
 
-    // Send service menu 30 seconds after check-in message
+    // Send a text nudge 30 seconds after check-in (guest must reply first to open 24hr window)
     setTimeout(async () => {
       try {
         const wa = require("./whatsapp");
-        await sendServiceMenu(phone, wa);
-      } catch(e) { console.log("Service menu error:", e.message); }
+        await wa.sendMessage(phone,
+          `🏨 *Sukhsagar Nature Resort* — Guest Services\n\nDear *${guestName}*, we're here to help anytime!\n\nReply *HI* to access:\n🛏 Housekeeping\n🍽 Room Dining\n🔧 Maintenance\n📞 Front Desk\n\nOr just type your request 😊`
+        );
+        console.log(`✓ Service nudge sent to ${phone}`);
+      } catch(e) { console.log("Service nudge error:", e.message); }
     }, 30000);
 
     res.json({ success: true, message: "Check-in template sent to " + phone, template: sentTemplate, meta: result });
