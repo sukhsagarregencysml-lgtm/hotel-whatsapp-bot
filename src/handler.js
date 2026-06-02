@@ -541,12 +541,13 @@ async function checkAndRespond(from, agent, session) {
         ? session.roomTypes
         : [{ type: session.roomType || "deluxe", count: session.rooms }];
 
-      // Get cumulative tally for this agent (financial year)
-      const tally = await getTally(from);
+      // Get tally — skip for guest bookings
+      const isGuestBooking = session.isGuestBooking || false;
+      const tally = isGuestBooking ? { roomsBooked: 0, freeRoomsUsed: 0 } : await getTally(from);
       const totalRoomsThisBooking = roomTypesList.reduce((s, r) => s + r.count, 0);
-      const roomsAfterBooking = tally.roomsBooked + totalRoomsThisBooking;
-      const freeRoomsAvailable = Math.floor(tally.roomsBooked / 10) - (tally.freeRoomsUsed || 0);
-      const newFreeRoomsEarned = Math.floor(roomsAfterBooking / 10) - Math.floor(tally.roomsBooked / 10);
+      const roomsAfterBooking = isGuestBooking ? 0 : tally.roomsBooked + totalRoomsThisBooking;
+      const freeRoomsAvailable = isGuestBooking ? 0 : Math.floor(tally.roomsBooked / 10) - (tally.freeRoomsUsed || 0);
+      const newFreeRoomsEarned = isGuestBooking ? 0 : Math.floor(roomsAfterBooking / 10) - Math.floor(tally.roomsBooked / 10);
 
       // Free rooms to apply = available + newly earned
       const freeRoomsToApply = freeRoomsAvailable + newFreeRoomsEarned;
@@ -594,7 +595,10 @@ async function checkAndRespond(from, agent, session) {
         rateMsg += `*Total after discount: Rs.${Math.round(grandTotal).toLocaleString()}*\n\n`;
       } else {
         rateMsg += `Total (without extra bed): *Rs.${Math.round(grandTotal).toLocaleString()}*\n`;
-        rateMsg += `📊 FY Tally: ${tally.roomsBooked} rooms booked → ${roomsNeededForNext} more for next FREE room\n\n`;
+        if (!session.isGuestBooking) {
+          rateMsg += `📊 FY Tally: ${tally.roomsBooked} rooms booked → ${roomsNeededForNext} more for next FREE room\n`;
+        }
+        rateMsg += `\n`;
       }
 
       if (newFreeRoomsEarned > 0) {
@@ -923,8 +927,9 @@ async function confirmAndSave(from, agent, session) {
       `Plan: ${session.plan}\n` +
       `Total: Rs.${Math.round(grandTotal).toLocaleString()}`;
 
-    // Update financial year tally
+    // Update tally — skip for guest bookings (BOOK1)
     try {
+      if (session.isGuestBooking) throw new Error("skip_guest");
       const tallyResult = await updateTally(from, agent.name, rooms);
       if (session.freeRoomsApplied > 0) {
         await useFreeRooms(from, agent.name, session.freeRoomsApplied);
@@ -953,7 +958,6 @@ async function confirmAndSave(from, agent, session) {
     }
 
     // ── PAYMENT POLICY ──────────────────────────────────────────
-    // If admin already received advance (ADV), skip QR entirely
     // If check-in < 15 days away: 50% now + 50% at check-in
     // If check-in >= 15 days away: 25% token + 35% (15 days before) + 40% at check-in
     try {
@@ -964,22 +968,19 @@ async function confirmAndSave(from, agent, session) {
       const daysToCheckin = Math.round((ciDate - today) / 86400000);
       const total = Math.round(grandTotal);
 
-      // If admin already received advance — just send confirmation, no QR
+      // If admin already received advance — NO QR, just confirmation
       if (session.advancePaidByAdmin > 0) {
         const balance = Math.max(0, total - session.advancePaidByAdmin);
         await sendMessage(from,
-          `✅ *BOOKING CONFIRMED*\n\n` +
-          `Voucher: *${voucherNo}*\n` +
-          `Guest: ${session.guestName}\n` +
-          `Check-in: ${fmtDate(session.ciDate)}\n` +
-          `Check-out: ${fmtDate(session.coDate)}\n\n` +
+          `✅ *BOOKING CONFIRMED*\n\nVoucher: *${voucherNo}*\nGuest: ${session.guestName}\n` +
+          `Check-in: ${fmtDate(session.ciDate)} | Check-out: ${fmtDate(session.coDate)}\n\n` +
           `Total: Rs.${total.toLocaleString()}\n` +
-          `Advance Received: Rs.${session.advancePaidByAdmin.toLocaleString()}\n` +
-          `*Balance at Check-in: Rs.${balance.toLocaleString()}*\n\n` +
+          `Advance Received: *Rs.${session.advancePaidByAdmin.toLocaleString()}*\n` +
+          `Balance at Check-in: *Rs.${balance.toLocaleString()}*\n\n` +
           (session.remark ? `📝 Remark: ${session.remark}\n\n` : "") +
-          `No payment QR sent (advance already received). 🙏`
+          `No payment QR sent — advance already received. 🙏`
         );
-        return; // Skip QR sending entirely
+        return;
       }
 
       let firstAmount, paymentSchedule, policyNote;
@@ -1166,17 +1167,15 @@ async function confirmAndSave(from, agent, session) {
           pendingPayments[from].secondPaymentAmount = Math.round(total * 0.35);
           pendingPayments[from].secondPaymentDueDate = reminderDate.toLocaleDateString("en-IN", {day:"numeric",month:"short",year:"numeric"});
         }
-        // Only notify admin for agent bookings (not BOOK1 guest)
-        if (!session.isGuestBooking) {
-          await sendReminder(ADMIN_PHONE,
-            `📅 *2ND PAYMENT INFO*\n` +
-            `Agent: ${agent.name} (${from})\n` +
-            `Voucher: ${voucherNo}\n` +
-            `2nd Payment (35%): Rs.${Math.round(total * 0.35).toLocaleString()}\n` +
-            `Due by: ${reminderDate.toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"})}\n\n` +
-            `To send reminder: *SEND REMINDER ${from}*`
-            );
-        }
+        // Notify admin about upcoming 2nd payment date
+        await sendReminder(ADMIN_PHONE,
+          `📅 *2ND PAYMENT INFO*\n` +
+          `Agent: ${agent.name} (${from})\n` +
+          `Voucher: ${voucherNo}\n` +
+          `2nd Payment (35%): Rs.${Math.round(total * 0.35).toLocaleString()}\n` +
+          `Due by: ${reminderDate.toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"})}\n\n` +
+          `To send reminder: *SEND REMINDER ${from}*`
+        );
       }
     } catch(qrErr) {
       console.error("QR send error:", qrErr.message);
@@ -1732,179 +1731,145 @@ async function handleAdminReply(from, text, t) {
     return;
   }
 
-  // BOOK/BOOK1/BOOK2 with full smart parser + ADV support
-  const isBook1 = t.startsWith("BOOK1 ");
-  const isBook2 = t.startsWith("BOOK2 ");
-  const isBook = t.startsWith("BOOK ") || isBook1 || isBook2;
-  if (isBook) {
-    if (isBook1 || isBook2) text = "BOOK " + text.slice(6);
+  // BOOK 919876543210 Rahul Singh 22july 24july 2 deluxe CP
+  if (t.startsWith("BOOK ")) {
     try {
-      const rawParts = text.trim().split(/\s+/);
-      const guestPhone = rawParts[1].replace(/\D/g, ""); // removes dots, spaces etc
+      // Parse: BOOK <phone> <name...> <ciDate> <coDate> <rooms> <roomType> <plan>
+      const parts = text.trim().split(/\s+/);
+      // parts[0] = BOOK
+      // parts[1] = phone
+      // Last 3 parts = rooms, roomType, plan (optional)
+      // Middle parts = name + dates
+
+      const guestPhone = parts[1].replace(/\D/g, "");
       const fullPhone = guestPhone.startsWith("91") ? guestPhone : "91" + guestPhone;
-      const afterPhone = rawParts.slice(2).join(" ");
 
-      // ── Step 1: Extract REMARK (everything after REMARK keyword) ──
-      const remarkMatch = afterPhone.match(/REMARK\s+(.+)$/i);
-      const remark = remarkMatch ? remarkMatch[1].trim() : null;
-      let clean = remarkMatch ? afterPhone.slice(0, remarkMatch.index).trim() : afterPhone;
-
-      // ── Step 2: Extract ADV (advance already received) ──────────
-      // Must be done BEFORE rate detection so ADV amount isn't picked as rate
-      const advMatch = clean.match(/\bADV(?:ANCE)?\s*(\d+)\b/i) || clean.match(/\bPAID\s*(\d+)\b/i);
-      const advancePaid = advMatch ? parseInt(advMatch[1]) : 0;
-      if (advMatch) clean = clean.replace(advMatch[0], "").trim();
-
-      // ── Step 3: Extract rate (last number after removing ADV) ────
-      let adminRate = null;
-      const rateKwMatch = clean.match(/(?:@|rs\.?\s*|rate\s*|price\s*)(\d{3,6})/i);
-      if (rateKwMatch) {
-        adminRate = parseInt(rateKwMatch[1]);
-      } else {
-        const tokens = clean.trim().split(/\s+/);
-        const last = tokens[tokens.length - 1].replace(/[^0-9]/g, "");
-        if (/^\d{3,5}$/.test(last)) {
-          const n = parseInt(last);
-          if (n >= 500 && n <= 50000) adminRate = n;
-        }
-      }
-
-      // ── Step 4: Extract plan ─────────────────────────────────────
+      // Detect plan at end
       let plan = "CP";
-      const planM = clean.match(/(MAPAI|MAP|CPAI|CP|EP)/i);
-      if (planM) plan = planM[1].toUpperCase();
-
-      // ── Step 5: Extract room types ───────────────────────────────
-      const textForRooms = adminRate ? clean.replace(String(adminRate), "").replace(/@/g, "").trim() : clean;
-      let textForDlx = textForRooms.replace(/\d+\s*(?:super\s*del(?:uxe)?|sdelx?|sdlx?|superdeluxe|spdlx)/gi, "");
-      const superRe = /(\d+)\s*(?:super\s*del(?:uxe)?|sdelx?|sdlx?|superdeluxe|spdlx)/gi;
-      const honeyRe = /(\d+)\s*(?:honey(?:moon)?|hmoon|hm(?=\s|$|\d))/gi;
-      const dlxRe   = /(\d+)\s*(?:del(?:uxe)?|dlx|delx)(?!\s*(?:super|sd))/gi;
-      let roomTypes = [], m;
-      superRe.lastIndex = 0; while ((m = superRe.exec(textForRooms)) !== null) roomTypes.push({ type: "superdeluxe", count: parseInt(m[1]) });
-      honeyRe.lastIndex = 0; while ((m = honeyRe.exec(textForRooms)) !== null) roomTypes.push({ type: "honeymoon", count: parseInt(m[1]) });
-      dlxRe.lastIndex = 0;   while ((m = dlxRe.exec(textForDlx))   !== null) roomTypes.push({ type: "deluxe", count: parseInt(m[1]) });
-      if (roomTypes.length === 0) {
-        const rRe = /(\d+)\s*r(?:ooms?)?/gi;
-        while ((m = rRe.exec(textForRooms)) !== null) roomTypes.push({ type: "deluxe", count: parseInt(m[1]) });
-      }
-      let roomType = "deluxe", rooms = 1;
-      if (roomTypes.length > 0) { roomType = roomTypes[0].type; rooms = roomTypes.reduce((s, r) => s + r.count, 0); }
-      else {
-        if (/super|sdelx|sdlx/i.test(textForRooms)) roomType = "superdeluxe";
-        else if (/honey|hm/i.test(textForRooms)) roomType = "honeymoon";
-        const gm = textForRooms.match(/(\d+)\s*(?:guest|pax|person|adult|people)/i);
-        rooms = gm ? Math.ceil(parseInt(gm[1]) / 3) : 1;
+      let lastIdx = parts.length - 1;
+      if (/^(CP|MAP|MAPAI|EP)$/i.test(parts[lastIdx])) {
+        plan = parts[lastIdx].toUpperCase();
+        lastIdx--;
       }
 
-      // ── Step 6: Parse dates ──────────────────────────────────────
+      // Detect roomType
+      let roomType = "deluxe";
+      if (/^(deluxe|dlx|superdeluxe|sdlx|honeymoon|honey|hm)$/i.test(parts[lastIdx])) {
+        const rt = parts[lastIdx].toLowerCase();
+        if (rt.includes("super") || rt === "sdlx") roomType = "superdeluxe";
+        else if (rt.includes("honey") || rt === "hm") roomType = "honeymoon";
+        else roomType = "deluxe";
+        lastIdx--;
+      }
+
+      // Detect rooms count
+      let rooms = 1;
+      if (/^\d+$/.test(parts[lastIdx]) && parseInt(parts[lastIdx]) <= 20) {
+        rooms = parseInt(parts[lastIdx]);
+        lastIdx--;
+      }
+
+      // Remaining middle parts after phone = name + dates
+      // Try to extract 2 dates from remaining text
+      const middleText = parts.slice(2, lastIdx + 1).join(" ");
       const { parseEnquiry } = require("./parser");
-      const roomInfo = roomTypes.length > 1 ? roomTypes.map(r => r.count + r.type).join(" ") + " " + plan : rooms + " " + roomType + " " + plan;
-      const parsed = parseEnquiry(clean + " " + roomInfo);
-      if (!parsed?.ciDate || !parsed?.coDate) {
-        await sendMessage(from, `❌ Could not parse dates.
-Format: *BOOK1 919... Rahul 22july 24july 2dlx CP 14400 ADV 3000*`);
+      const parsed = parseEnquiry(middleText + " " + rooms + " " + roomType + " " + plan);
+
+      if (!parsed || !parsed.ciDate || !parsed.coDate) {
+        await sendMessage(from,
+          `❌ Could not parse dates. Format:
+
+` +
+          `*BOOK 919876543210 Rahul Singh 22july 24july 2 deluxe CP*`
+        );
         return;
       }
 
-      // ── Step 7: Guest name ───────────────────────────────────────
-      const dRe = /\d{1,2}[.\-\/]\d{1,2}|\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
-      const dIdx = clean.search(dRe);
-      let guestName = dIdx > 0 ? clean.slice(0, dIdx).trim() : "Guest";
-      guestName = guestName
-        .replace(/^name\s+/i, "") // remove "Name" prefix if typed
-        .replace(/(CP|MAP|MAPAI|EP|deluxe|dlx|super|sdlx|honey|hm|\d+)/gi, "")
-        .replace(/\./g, "") // remove dots (like "918627038322.")
-        .trim() || "Guest";
+      // Extract guest name (parts between phone and first date)
+      // Find where dates start in middleText
+      const dateRe = /\d{1,2}[\.\-\/]\d{1,2}|\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
+      const dateMatch = middleText.search(dateRe);
+      const guestName = dateMatch > 0 ? middleText.slice(0, dateMatch).trim() : "Guest";
 
-      // ── Step 8: Auto-add guest ───────────────────────────────────
-      const { getAgent: ga, addAgent: aa } = require("./agents");
-      let agent2 = await ga(fullPhone);
-      if (!agent2) {
-        await aa(fullPhone, guestName, "Guest");
-        agent2 = { phone: fullPhone, name: guestName, category: "Guest" };
-        await sendMessage(from, `📋 ${guestName} (${fullPhone}) added as Guest`);
+      // Check if number exists in agents, if not auto-add as Guest category
+      const { getAgent, addAgent } = require("./agents");
+      let agent = await getAgent(fullPhone);
+      if (!agent) {
+        await addAgent(fullPhone, guestName, "Guest");
+        agent = { phone: fullPhone, name: guestName, category: "Guest" };
+        await sendMessage(from, `📋 *${guestName}* (${fullPhone}) auto-added as Guest`);
       }
 
-      // ── Step 9: Calculate rate and total ────────────────────────
-      const nights = Math.max(1, Math.round((new Date(parsed.coDate) - new Date(parsed.ciDate)) / 86400000));
-      let grandTotal, finalRate, rateTypeLabel = "";
+      // Detect admin custom rate — last part if > 500
+      let adminRate = null;
+      const lastPart = parts[parts.length - 1];
+      if (/^\d+$/.test(lastPart) && parseInt(lastPart) > 500 && parseInt(lastPart) !== rooms) {
+        adminRate = parseInt(lastPart);
+      }
 
+      // Get rate — use admin rate if provided, else standard
+      let finalRate;
       if (adminRate) {
-        // Admin put total amount directly
-        grandTotal = adminRate;
-        finalRate = Math.round(adminRate / (rooms * nights));
-        rateTypeLabel = "(admin total)";
-      } else if (isBook1) {
-        const { getCustomerRate } = require("./rates");
-        const ri = getCustomerRate(roomType, plan, parsed.ciDate);
-        if (!ri) { await sendMessage(from, `❌ Rate not found. Add total: *BOOK1 ... 14400*`); return; }
-        finalRate = ri.rate; grandTotal = finalRate * rooms * nights; rateTypeLabel = "(customer rate)";
+        finalRate = adminRate;
       } else {
-        const { getRate } = require("./rates");
-        const ri = getRate(roomType, plan, parsed.ciDate, agent2.category === "Guest" ? "C" : agent2.category);
-        if (!ri) { await sendMessage(from, `❌ Rate not found. Add total: *BOOK ... 14400*`); return; }
-        finalRate = ri.rate; grandTotal = finalRate * rooms * nights; rateTypeLabel = "(agent rate)";
+        const { getRate, getCustomerRate, CUSTOMER_EXTRAS } = require("./rates");
+        const rateInfo = getRate(roomType, plan, parsed.ciDate, agent.category === "Guest" ? "C" : agent.category);
+        if (!rateInfo) {
+          await sendMessage(from, `❌ Could not find rate for ${roomType} ${plan}. Add rate at end:\n*BOOK ... 4500*`);
+          return;
+        }
+        finalRate = rateInfo.rate;
       }
 
-      const balanceAtCheckin = advancePaid > 0 ? Math.max(0, grandTotal - advancePaid) : null;
-      const advanceAmount = advancePaid > 0 ? advancePaid : Math.round(grandTotal * 0.20);
-      const roomSummary = roomTypes.length > 1
-        ? roomTypes.map(r => `${r.count} x ${r.type === "honeymoon" ? "Honeymoon" : r.type === "superdeluxe" ? "Super Deluxe" : "Deluxe"}`).join(" + ")
-        : `${rooms} x ${roomType === "honeymoon" ? "Honeymoon" : roomType === "superdeluxe" ? "Super Deluxe" : "Deluxe"}`;
-      const remarkText = remark ? `
-Remark: _${remark}_` : "";
-      const advText = advancePaid > 0
-        ? `
-Advance Received: Rs.${advancePaid.toLocaleString()}
-Balance at Check-in: Rs.${balanceAtCheckin.toLocaleString()}`
-        : `
-Advance (20%): Rs.${advanceAmount.toLocaleString()}`;
+      const nights = Math.max(1, Math.round((new Date(parsed.coDate) - new Date(parsed.ciDate)) / 86400000));
+      const grandTotal = finalRate * rooms * nights;
+      const advanceAmount = Math.round(grandTotal * 0.20);
 
+      // Build a fake session and call confirmAndSave
       const fakeSession = {
-        ciDate: parsed.ciDate, coDate: parsed.coDate,
-        roomType, rooms, roomTypes: roomTypes.length > 1 ? roomTypes : null,
-        plan: plan.toUpperCase(), rate: finalRate, grandTotal: Math.round(grandTotal),
-        nights, adults: parsed.adults || rooms * 2, kids: 0,
-        guestName, guestMobile: fullPhone,
-        extraBed: 0, extraBedCharge: 0, extraBedType: null,
-        remark, isGuestBooking: isBook1,
-        advancePaidByAdmin: advancePaid,
+        ciDate: parsed.ciDate,
+        coDate: parsed.coDate,
+        roomType,
+        rooms,
+        plan: plan.toUpperCase(),
+        rate: finalRate,
+        grandTotal: Math.round(grandTotal),
+        nights,
+        adults: parsed.adults || rooms * 2,
+        kids: 0,
+        guestName,
+        guestMobile: fullPhone,
+        extraBed: 0,
+        extraBedCharge: 0,
+        extraBedType: null,
+        remark: remark || null,
+        isGuestBooking: isBook1,
+        advancePaidByAdmin: advancePaid || 0,
       };
 
       await sendMessage(from,
-        `⏳ Creating for *${guestName}*...
-` +
-        `${fmtDate(parsed.ciDate)} → ${fmtDate(parsed.coDate)}
-` +
-        `${roomSummary} | ${plan}
-` +
-        `Total: *Rs.${Math.round(grandTotal).toLocaleString()}* ${rateTypeLabel}` +
-        advText + remarkText
+        `⏳ Creating booking for *${guestName}*...\n` +
+        `${fmtDate(parsed.ciDate)} → ${fmtDate(parsed.coDate)}\n` +
+        `${rooms} x ${roomType} | ${plan}\n` +
+        `Rate: Rs.${finalRate.toLocaleString()}/night${adminRate ? " (admin rate)" : ""}\n` +
+        `Total: Rs.${Math.round(grandTotal).toLocaleString()}`
       );
 
-      await confirmAndSave(fullPhone, agent2, fakeSession);
+      await confirmAndSave(fullPhone, agent, fakeSession);
 
       await sendMessage(from,
-        `✅ *Booking created!*
-
-` +
-        `Guest: ${guestName} (${fullPhone})
-` +
-        `Check-in: ${fmtDate(parsed.ciDate)}
-` +
-        `Check-out: ${fmtDate(parsed.coDate)}
-` +
-        `Rooms: ${roomSummary}
-` +
-        `Plan: ${plan}
-` +
-        `Total: *Rs.${Math.round(grandTotal).toLocaleString()}*` +
-        advText + remarkText + `
-
-Voucher + QR sent ✅`
+        `✅ *Booking created!*\n\n` +
+        `Guest: ${guestName} (${fullPhone})\n` +
+        `Check-in: ${fmtDate(parsed.ciDate)}\n` +
+        `Check-out: ${fmtDate(parsed.coDate)}\n` +
+        `Rooms: ${rooms} x ${roomType}\n` +
+        `Plan: ${plan}\n` +
+        `Rate: Rs.${finalRate.toLocaleString()}/night${adminRate ? " (admin rate)" : ""}\n` +
+        `Total: Rs.${Math.round(grandTotal).toLocaleString()}\n` +
+        `Advance (20%): Rs.${advanceAmount.toLocaleString()}\n\n` +
+        `Voucher + QR sent to ${fullPhone} ✅`
       );
-    } catch (err) {
+    } catch(err) {
       console.error("Admin BOOK error:", err.message);
       await sendMessage(from, `❌ Booking failed: ${err.message}`);
     }
@@ -1912,37 +1877,14 @@ Voucher + QR sent ✅`
   }
 
   await sendMessage(from,
-    `*Admin Commands:*
-
-` +
-    `*Booking:*
-BOOK1 919... Name 22july 24july 2dlx CP 14400 → Guest rates
-` +
-    `BOOK2 919... Name 22july 24july 2dlx CP 14400 → Agent rates
-` +
-    `Add ADV 3000 for advance already received
-Add REMARK for notes
-
-` +
-    `*Payment:*
-PAY RECEIVED 91XXXXXXXXXX 5000
-APPROVE PAY 91XXXXXXXXXX 5000
-` +
-    `REJECT PAY 91XXXXXXXXXX
-SEND REMINDER 91XXXXXXXXXX
-LIST PAY
-
-` +
-    `*Cancellation:*
-APPROVE CANCEL SR-001
-REJECT CANCEL SR-001
-LIST CANCEL
-
-` +
-    `*Agents:*
-ADD AGENT 91XXXXXXXXXX Name A/B/C
-REMOVE AGENT 91XXXXXXXXXX
-LIST AGENTS`
+    `*Admin Commands:*\n\n` +
+    `BOOK 91XXXXXXXXXX Name 22july 24july 2 deluxe CP\n` +
+    `APPROVE PAY 91XXXXXXXXXX 5000\n` +
+    `REJECT PAY 91XXXXXXXXXX\n` +
+    `LIST PAY\n` +
+    `ADD AGENT 91XXXXXXXXXX Name A/B/C\n` +
+    `REMOVE AGENT 91XXXXXXXXXX\n` +
+    `LIST AGENTS`
   );
 }
 
