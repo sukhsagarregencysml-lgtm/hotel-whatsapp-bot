@@ -819,7 +819,11 @@ async function confirmAndSave(from, agent, session) {
 
     // Guests added by admin — use approved template (works for any number)
     // Agents — send full voucher text
-    if (agent.category === "Guest") {
+    // For admin-initiated bookings, send voucher to admin not guest
+    if (session.isGuestBooking) {
+      // Send full voucher to ADMIN (they forward to guest manually if needed)
+      await sendReminder(ADMIN_PHONE, voucherMsg);
+    } else if (agent.category === "Guest") {
       await sendConfirmed(from, {
         ciDate: session.ciDate,
         coDate: session.coDate,
@@ -853,7 +857,7 @@ async function confirmAndSave(from, agent, session) {
       const form = new FormData();
       form.append("messaging_product", "whatsapp");
       form.append("recipient_type", "individual");
-      form.append("to", from);
+      form.append("to", session.isGuestBooking ? ADMIN_PHONE : from);
       form.append("type", "document");
       form.append("document[caption]", `Booking Voucher - ${voucherNo}`);
       form.append("document[filename]", `Voucher-${voucherNo}.pdf`);
@@ -887,7 +891,7 @@ async function confirmAndSave(from, agent, session) {
           {
             messaging_product: "whatsapp",
             recipient_type: "individual",
-            to: from,
+            to: session.isGuestBooking ? ADMIN_PHONE : from,
             type: "document",
             document: {
               id: mediaId,
@@ -942,10 +946,11 @@ async function confirmAndSave(from, agent, session) {
       if (roomsNeededForNext < 10) {
         tallyMsg += `Next free room in: *${roomsNeededForNext} more room${roomsNeededForNext > 1 ? "s" : ""}*`;
       }
-      await sendReminder(from, tallyMsg);
-
+      if (!session.isGuestBooking) {
+        await sendReminder(from, tallyMsg);
+      }
       // Update admin msg with tally
-      const adminTallyNote = `\nFY Tally: ${tallyResult.newRooms} rooms | Free rooms used: ${session.freeRoomsApplied || 0}`;
+      const adminTallyNote = session.isGuestBooking ? "" : `\nFY Tally: ${tallyResult.newRooms} rooms | Free rooms used: ${session.freeRoomsApplied || 0}`;
       await sendReminder(ADMIN_PHONE, adminMsg + adminTallyNote);
     } catch(tallyErr) {
       console.error("Tally update error:", tallyErr.message);
