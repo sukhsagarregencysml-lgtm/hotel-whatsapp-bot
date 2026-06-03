@@ -1,6 +1,6 @@
 const axios = require("axios");
 
-const PMS_URL = process.env.PMS_URL || "https://hotelease-backend-fhba.onrender.com";
+const PMS_URL = process.env.PMS_URL || "https://api.optisetup.in";
 const CHAT_SECRET = process.env.CHAT_WEBHOOK_SECRET || process.env.STAYEZEE_API_KEY || "";
 
 function cleanPhone(phone) {
