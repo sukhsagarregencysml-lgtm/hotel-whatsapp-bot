@@ -747,9 +747,6 @@ async function confirmAndSave(from, agent, session) {
 
     // Get Stayezee confirmation number
     const stayezeeData = stayezeeRes?.data;
-    const confirmNo = stayezeeData?.booking_id || stayezeeData?.confirmation_no || 
-                      stayezeeData?.reservation_no || stayezeeData?.id || 
-                      stayezeeData?.message || "Generated";
     // Store stayezee ID for potential cancellation
     session.stayezeeId = stayezeeData?.booking_id || stayezeeData?.id || stayezeeData?.reservation_no || null;
 
@@ -769,6 +766,7 @@ async function confirmAndSave(from, agent, session) {
                       String(now.getMonth()+1).padStart(2,"0") +
                       now.getFullYear() + "-" +
                       String(Math.floor(Math.random()*9000)+1000);
+    const confirmNo = voucherNo; // Use our voucher number as confirmation
 
     // WhatsApp VOUCHER to agent
     let voucherMsg =
