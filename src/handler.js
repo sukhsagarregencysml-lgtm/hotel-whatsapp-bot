@@ -708,7 +708,19 @@ async function checkAndRespond(from, agent, session) {
   }
 }
 
+// Track in-progress bookings to prevent duplicates
+const bookingInProgress = new Set();
+
 async function confirmAndSave(from, agent, session) {
+  // Prevent duplicate booking for same phone
+  const bookingKey = `${from}_${session.ciDate}_${session.coDate}`;
+  if (bookingInProgress.has(bookingKey)) {
+    console.log("Duplicate booking prevented for:", bookingKey);
+    return;
+  }
+  bookingInProgress.add(bookingKey);
+  setTimeout(() => bookingInProgress.delete(bookingKey), 30000); // clear after 30s
+
   try {
     const ciFormatted = session.ciDate || "";
     const coFormatted = session.coDate || "";
@@ -1875,6 +1887,9 @@ async function handleAdminReply(from, text, t) {
         `⏳ Creating for *${guestName}*...\n${fmtDate(parsed.ciDate)} → ${fmtDate(parsed.coDate)}\n` +
         `${roomSummary} | ${plan}\nTotal: *Rs.${Math.round(grandTotal).toLocaleString()}* ${rateTypeLabel}` + advText + remarkText
       );
+      // Clear any existing session for guest phone to prevent duplicate bookings
+      sessions[fullPhone] = { step: "idle" };
+
       await confirmAndSave(fullPhone, agent2, fakeSession);
       await sendMessage(from,
         `✅ *Booking created!*\n\nGuest: ${guestName} (${fullPhone})\n` +
