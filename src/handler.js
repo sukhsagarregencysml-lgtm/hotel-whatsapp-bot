@@ -57,8 +57,23 @@ async function getAgent(phone) {
   return db.getAgent(phone);
 }
 
+// Message dedup — prevent same message being processed twice
+const processedMsgIds = new Set();
+
 async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId }) {
-  const t = (text || "").trim().toUpperCase();
+  // Dedup check
+  if (msgId && processedMsgIds.has(msgId)) {
+    console.log("Duplicate message ignored:", msgId);
+    return;
+  }
+  if (msgId) {
+    processedMsgIds.add(msgId);
+    setTimeout(() => processedMsgIds.delete(msgId), 60000); // clear after 1 min
+  }
+
+  // Normalize newlines — WhatsApp multiline messages
+  text = (text || "").replace(/\r\n/g, " ").replace(/\n/g, " ").trim();
+  const t = text.toUpperCase();
   console.log(`MSG From ${from}: ${text || "[media]"}`);
 
   // -- PAYMENT SCREENSHOT HANDLER -----------------------------------------
@@ -1779,10 +1794,13 @@ async function handleAdminReply(from, text, t) {
       const fullPhone = guestPhone.startsWith("91") ? guestPhone : "91" + guestPhone;
       const afterPhone = rawParts.slice(2).join(" ");
 
-      // Step 1: Extract REMARK
-      const remarkMatch = afterPhone.match(/\bREMARK\b\s+(.+)$/i);
+      // Step 1: Normalize newlines + Extract REMARK
+      // WhatsApp multiline: "Book1 ... 11000 adv 1000
+Remarks 3 adults 1 kid"
+      const normalizedAfterPhone = afterPhone.replace(/\n/g, " ").replace(/\r/g, " ");
+      const remarkMatch = normalizedAfterPhone.match(/\bREMARK[S]?\b\s+(.+)$/i);
       const remark = remarkMatch ? remarkMatch[1].trim() : null;
-      let clean = remarkMatch ? afterPhone.slice(0, remarkMatch.index).trim() : afterPhone;
+      let clean = remarkMatch ? normalizedAfterPhone.slice(0, remarkMatch.index).trim() : normalizedAfterPhone;
 
       // Step 2: Extract ADV BEFORE rate (adv1000 or adv 1000)
       const advMatch = clean.match(/\bADV(?:ANCE)?\s*(\d+)\b/i) || clean.match(/\bPAID\s*(\d+)\b/i);
