@@ -1795,8 +1795,7 @@ async function handleAdminReply(from, text, t) {
       const afterPhone = rawParts.slice(2).join(" ");
 
       // Step 1: Normalize newlines + Extract REMARK
-      // WhatsApp multiline: "Book1 ... 11000 adv 1000
-Remarks 3 adults 1 kid"
+      // WhatsApp multiline messages have \n between lines - normalize first
       const normalizedAfterPhone = afterPhone.replace(/\n/g, " ").replace(/\r/g, " ");
       const remarkMatch = normalizedAfterPhone.match(/\bREMARK[S]?\b\s+(.+)$/i);
       const remark = remarkMatch ? remarkMatch[1].trim() : null;
