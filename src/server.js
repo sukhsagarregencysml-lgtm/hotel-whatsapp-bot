@@ -3,17 +3,7 @@ const express = require("express");
 const app = express();
 app.use(express.json());
 
-const auth = (req, res, next) => {
-  const apiKey = process.env.STAYEZEE_API_KEY;
-  if (apiKey && req.headers["x-api-key"] !== apiKey) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-  next();
-};
-
 const { handleIncoming } = require("./handler");
-const { registerGuestForServices, sendServiceMenu, startFeedback, guestRoomMap } = require("./guest-services");
-const { syncChatMessage } = require("./chat-sync");
 
 // ── Webhook verification ───────────────────────────────────────────────────
 app.get("/webhook", (req, res) => {
@@ -42,118 +32,21 @@ app.post("/webhook", async (req, res) => {
 
     let text = "";
     let mediaId = null;
-    let buttonId = null;
-    const contextMsgId = msg.context?.id || null;
 
     if (msgType === "text") {
       text = msg.text?.body || "";
     } else if (msgType === "image") {
       mediaId = msg.image?.id || null;
       text = msg.image?.caption || "";
-    } else if (msgType === "interactive") {
-      if (msg.interactive?.type === "button_reply") {
-        buttonId = msg.interactive.button_reply?.id;
-        text = msg.interactive.button_reply?.title || "";
-      } else if (msg.interactive?.type === "list_reply") {
-        buttonId = msg.interactive.list_reply?.id;
-        text = msg.interactive.list_reply?.title || "";
-      }
     } else {
-      return;
+      return; // ignore other types
     }
 
-    console.log(`📨 From ${from} [${msgType}]: ${text}${buttonId ? " [btn:"+buttonId+"]" : ""}`);
-    const guest = guestRoomMap[from] || {};
-    await syncChatMessage({
-      hotelId: guest.hotelId,
-      phone: from,
-      guestName: guest.guestName,
-      roomNumber: guest.roomNumber,
-      direction: "inbound",
-      sender: "guest",
-      messageType: msgType,
-      message: text || buttonId || msgType,
-      waMessageId: msg.id,
-      meta: { buttonId, mediaId, contextMsgId }
-    });
-    await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId, contextMsgId, buttonId });
+    console.log(`📨 From ${from} [${msgType}]: ${text}`);
+    await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId });
   } catch (err) {
     console.error("Webhook error:", err.message);
   }
-});
-
-// ── Bot tasks proxy (for Chats page) ───────────────────────────
-app.get('/api/bot/tasks', auth, async (req, res) => {
-  try {
-    const result = await new Promise((resolve, reject) => {
-      const https = require('https');
-      https.get('https://hotel-whatsapp-bot-2ole.onrender.com/active-tasks', r => {
-        let body = '';
-        r.on('data', d => body += d);
-        r.on('end', () => resolve(JSON.parse(body)));
-      }).on('error', reject);
-    });
-    res.json(result);
-  } catch(err) {
-    res.json({ success: true, tasks: [] });
-  }
-});
-
-// ── Send WhatsApp message proxy ─────────────────────────────────
-app.post('/api/whatsapp/send', auth, async (req, res) => {
-  try {
-    const { phone, message } = req.body;
-    const https = require('https');
-    const payload = JSON.stringify({ to: phone, message });
-    const r = await new Promise((resolve, reject) => {
-      const req2 = https.request({
-        hostname: 'hotel-whatsapp-bot-2ole.onrender.com',
-        port: 443, path: '/send-message', method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
-      }, r => { let b = ''; r.on('data', d => b += d); r.on('end', () => resolve(JSON.parse(b))); });
-      req2.on('error', reject);
-      req2.write(payload); req2.end();
-    });
-    res.json({ success: true });
-  } catch(err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post('/send-message', async (req, res) => {
-  const apiKey = process.env.STAYEZEE_API_KEY;
-  if (apiKey && req.headers["x-api-key"] !== apiKey) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-  try {
-    const { phone, to, message, text, hotelId, sender } = req.body;
-    const target = phone || to;
-    const body = message || text;
-    if (!target || !body) return res.status(400).json({ error: "phone and message are required" });
-    const { sendMessage } = require("./whatsapp");
-    const result = await sendMessage(target, body, { skipSync: true, hotelId, sender: sender || "staff" });
-    res.json({ success: true, message: "Message sent to " + target, meta: result });
-  } catch (err) {
-    res.status(500).json({ error: err.message, detail: err.response?.data });
-  }
-});
-
-
-// ── Feedback summary (for PMS Business Overview) ────────────────
-app.get("/feedback-summary", async (req, res) => {
-  const { feedbackSessions } = require("./guest-services");
-  // Return stored feedback history
-  const feedbacks = global.feedbackHistory || [];
-  const avg = feedbacks.length > 0
-    ? feedbacks.reduce((s,f) => s + f.rating, 0) / feedbacks.length
-    : 0;
-  res.json({ success: true, feedbacks, avgRating: avg.toFixed(1), total: feedbacks.length });
-});
-
-// ── Tasks history (completed tasks log) ─────────────────────────
-app.get("/tasks-history", async (req, res) => {
-  const history = global.tasksHistory || [];
-  res.json({ success: true, tasks: history });
 });
 
 // ── Health check ───────────────────────────────────────────────────────────
@@ -199,198 +92,213 @@ app.post("/send-optin", async (req, res) => {
 
 // -- POST /send-checkin -- called by PMS on check-in ---------------
 app.post("/send-checkin", async (req, res) => {
-  // Optional API key auth — set STAYEZEE_API_KEY in .env to enable
-  const apiKey = process.env.STAYEZEE_API_KEY;
-  if (apiKey && req.headers["x-api-key"] !== apiKey) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
   try {
-    const { hotelId, phone, guestName, hotelName, room, checkout, plan, wifi } = req.body;
-    if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName are required" });
-    const templateName = process.env.WA_CHECKIN_TEMPLATE || "guest_check_in";
-    const wa = require("./whatsapp");
-    const values = { hotelName, guestName, room, checkout, plan, wifi };
-    let sentTemplate = templateName;
-    let result;
-    try {
-      result = templateName === "hotel_checkin"
-        ? await wa.sendHotelCheckin(phone, values)
-        : templateName === "guest_check_in"
-          ? await wa.sendGuestCheckIn(phone, values)
-          : await wa.sendTemplate(phone, templateName, [hotelName || "Hotel", guestName, room || "-", checkout || "-", plan || "-", wifi || "-"]);
-    } catch (templateErr) {
-      if (templateName !== "guest_check_in") throw templateErr;
-      console.log("guest_check_in failed, trying hotel_checkin:", templateErr.response?.data?.error?.message || templateErr.message);
-      sentTemplate = "hotel_checkin";
-      result = await wa.sendHotelCheckin(phone, values);
-    }
+    const { phone, guestName, hotelName, room, checkout, plan, wifi } = req.body;
+    const { sendMessage } = require("./whatsapp");
 
-    // Register guest for WhatsApp service requests
-    registerGuestForServices(phone, guestName, hotelName, room, checkout, hotelId);
+    const msg =
+      `Welcome to ${hotelName}! 🏨\n\n` +
+      `Dear ${guestName},\n\n` +
+      `You are now checked in. Here are your details:\n\n` +
+      `Room: ${room}\n` +
+      `Check-out: ${checkout}\n` +
+      `Plan: ${plan}\n` +
+      `WiFi: ${wifi}\n\n` +
+      `For assistance please call reception.\n\n` +
+      `We wish you a wonderful stay!\n` +
+      `Team ${hotelName}`;
 
-    // Send a text nudge 30 seconds after check-in (guest must reply first to open 24hr window)
-    setTimeout(async () => {
-      try {
-        const wa = require("./whatsapp");
-        await wa.sendMessage(phone,
-          `🏨 *Sukhsagar Nature Resort* — Guest Services\n\nDear *${guestName}*, we're here to help anytime!\n\nReply *HI* to access:\n🛏 Housekeeping\n🍽 Room Dining\n🔧 Maintenance\n📞 Front Desk\n\nOr just type your request 😊`
-        );
-        console.log(`✓ Service nudge sent to ${phone}`);
-      } catch(e) { console.log("Service nudge error:", e.message); }
-    }, 30000);
-
-    res.json({ success: true, message: "Check-in template sent to " + phone, template: sentTemplate, meta: result });
+    await sendMessage(phone, msg);
+    res.json({ success: true, message: "Check-in message sent to " + phone });
   } catch (err) {
-    res.status(500).json({ error: err.message, detail: err.response?.data });
+    res.status(500).json({ error: err.message });
   }
 });
 
 // -- POST /send-checkout -- called by PMS on checkout ---------------
 app.post("/send-checkout", async (req, res) => {
-  // Optional API key auth — set STAYEZEE_API_KEY in .env to enable
-  const apiKey = process.env.STAYEZEE_API_KEY;
-  if (apiKey && req.headers["x-api-key"] !== apiKey) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
   try {
-    const { phone, guestName, hotelName, roomType, roomCharges, extraCharges, gst, total, reviewLink } = req.body;
-    if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName are required" });
-    const templateName = process.env.WA_CHECKOUT_TEMPLATE || "hotel_checkout";
-    const wa = require("./whatsapp");
-    const result = templateName === "hotel_checkout"
-      ? await wa.sendHotelCheckout(phone, { guestName, hotelName, roomType, roomCharges, extraCharges, gst, total, reviewLink })
-      : await wa.sendTemplate(phone, templateName, [
-          guestName,
-          hotelName || "Hotel",
-          roomType || "Room",
-          Number(roomCharges || 0).toLocaleString("en-IN"),
-          Number(extraCharges || 0).toLocaleString("en-IN"),
-          Number(gst || 0).toLocaleString("en-IN"),
-          Number(total || 0).toLocaleString("en-IN"),
-          reviewLink || "-",
-          hotelName || "Hotel"
-        ]);
+    const { phone, guestName, hotelName, roomCharges, gst, total, reviewLink } = req.body;
+    const { sendMessage } = require("./whatsapp");
 
-    // Send feedback/rating request 2 minutes after checkout message
-    setTimeout(async () => {
-      try {
-        const wa = require("./whatsapp");
-        await startFeedback(phone, guestName, wa);
-      } catch(e) { console.log("Feedback error:", e.message); }
-    }, 2 * 60 * 1000);
+    const msg =
+      `Dear ${guestName},\n\n` +
+      `Thank you for staying at ${hotelName}! 🙏\n\n` +
+      `Your bill summary:\n` +
+      `Room charges: Rs.${roomCharges}\n` +
+      `GST: Rs.${gst}\n` +
+      `Total: Rs.${total}\n\n` +
+      `We hope to see you again!\n\n` +
+      (reviewLink ? `Please share your experience:\n${reviewLink}` : "");
 
-    res.json({ success: true, message: "Checkout template sent to " + phone, template: templateName, meta: result });
+    await sendMessage(phone, msg);
+    res.json({ success: true, message: "Checkout message sent to " + phone });
   } catch (err) {
-    res.status(500).json({ error: err.message, detail: err.response?.data });
+    res.status(500).json({ error: err.message });
   }
 });
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));
 
-// ── DAILY PAYMENT REMINDER CHECK — every day at 9 AM ─────────
+// ── DAILY MARKETING SMS — 10 AM IST ───────────────────────────
 const cron = require("node-cron");
+const axios = require("axios");
 
-cron.schedule("0 9 * * *", async () => {
+const SHEET_ID = "1_j7ZR95Q6sChI95R_HJ2WZ-l_jhc8IcPvWGt7zIiZog";
+const SHEETS_API_KEY = process.env.GOOGLE_SHEETS_API_KEY || "AIzaSyCZbJjKgySFBC2hGvFvXkZTvnWZvwQz4pE";
+const MARKETING_TEMPLATE = "sukhsagar_marketing_sms";
+
+const fs = require("fs");
+const SENT_NUMBERS_FILE = "./sent_marketing_numbers.json";
+
+function loadSentNumbers() {
   try {
-    const { pendingPayments } = require("./handler");
-    const axios = require("axios");
-    const today = new Date().toISOString().split("T")[0];
-    const UPI_ID = process.env.UPI_ID || "9816003322@okbizaxis";
-
-    for (const [phone, pending] of Object.entries(pendingPayments)) {
-      // Check if 2nd payment reminder is due today
-      if (
-        pending.secondPaymentReminderDate &&
-        pending.secondPaymentReminderDate <= today &&
-        pending.paymentStep === 1
-      ) {
-        try {
-          const secondAmt = pending.secondPaymentAmount || Math.round((pending.total || 0) * 0.35);
-          const upiLink2 = `upi://pay?pa=${UPI_ID}&pn=Hotel%20Sukhsagar%20Regency&am=${secondAmt}&cu=INR&tn=2nd-${pending.voucherNo}`;
-          const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=1000x1000&ecc=H&margin=2&data=${encodeURIComponent(upiLink2)}`;
-
-          await axios.post(
-            `https://graph.facebook.com/v25.0/${process.env.WA_PHONE_NUMBER_ID}/messages`,
-            {
-              messaging_product: "whatsapp",
-              recipient_type: "individual",
-              to: phone,
-              type: "image",
-              image: {
-                link: qrUrl,
-                caption:
-                  `⏰ *2ND PAYMENT DUE*\n\n` +
-                  `Voucher: *${pending.voucherNo}*\n` +
-                  `Guest: ${pending.guestName}\n` +
-                  `Check-in: *${pending.ciDate}* is in 15 days!\n\n` +
-                  `2nd Payment (35%): *Rs.${secondAmt.toLocaleString()}*\n` +
-                  `UPI ID: *${UPI_ID}*\n\n` +
-                  `📸 Please pay and send screenshot.`
-              }
-            },
-            { headers: { Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`, "Content-Type": "application/json" } }
-          );
-
-          // Notify admin
-          const { sendReminder } = require("./whatsapp");
-          await sendReminder(process.env.ADMIN_PHONE || "919816003322",
-            `⏰ *2ND PAYMENT REMINDER SENT*\n` +
-            `Agent: ${pending.agentName} (${phone})\n` +
-            `Voucher: ${pending.voucherNo}\n` +
-            `Amount: Rs.${secondAmt.toLocaleString()} (35%)`
-          );
-
-          // Update payment step
-          pendingPayments[phone].paymentStep = 2;
-          delete pendingPayments[phone].secondPaymentReminderDate;
-          console.log(`✓ 2nd payment reminder sent to ${phone} for voucher ${pending.voucherNo}`);
-        } catch(e) {
-          console.error(`✗ 2nd payment reminder error for ${phone}:`, e.message);
-        }
-      }
+    if (fs.existsSync(SENT_NUMBERS_FILE)) {
+      return new Set(JSON.parse(fs.readFileSync(SENT_NUMBERS_FILE, "utf8")));
     }
-  } catch(e) {
-    console.error("Daily payment cron error:", e.message);
-  }
-}, { timezone: "Asia/Kolkata" });
+  } catch(e) { console.error("Load sent numbers error:", e.message); }
+  return new Set();
+}
 
-console.log("⏰ Daily payment reminder cron scheduled at 9 AM IST");
-
-// ── DAILY BLAST BATCH — runs every hour 9AM to 5PM IST ───────────────────
-// Spreads 50 messages through the day naturally (not all at once)
-cron.schedule("0 9,10,11,12,13,14,15,16 * * *", async () => {
+function saveSentNumbers(sentSet) {
   try {
-    const { blastQueue, runBlastBatch } = require("./handler");
-    if (!blastQueue || !blastQueue.message) return;
-    console.log(`⏰ Blast cron: running batch. Pending: ${blastQueue.pending.length}`);
-    const ADMIN_PHONE = process.env.ADMIN_PHONE || "919816003322";
-    await runBlastBatch(ADMIN_PHONE);
+    fs.writeFileSync(SENT_NUMBERS_FILE, JSON.stringify([...sentSet]), "utf8");
+  } catch(e) { console.error("Save sent numbers error:", e.message); }
+}
+
+async function fetchAgentNumbers() {
+  try {
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/leads!E:E?key=${SHEETS_API_KEY}`;
+    const res = await axios.get(url, { timeout: 10000 });
+    const rows = res.data?.values || [];
+    const numbers = rows
+      .flat()
+      .map(n => String(n).replace(/\D/g, ""))
+      .filter(n => n.length >= 10 && n.length <= 13)
+      .map(n => n.startsWith("91") ? n : "91" + n.slice(-10));
+    return [...new Set(numbers)];
   } catch (err) {
-    console.error("Blast cron error:", err.message);
+    console.error("Google Sheets fetch error:", err.message);
+    return [];
   }
-}, { timezone: "Asia/Kolkata" });
+}
 
-console.log("⏰ Blast cron scheduled hourly 9AM-5PM IST (50/day max)");
+async function sendMarketingSMS() {
+  console.log("📣 Starting daily marketing SMS...");
+  const allNumbers = await fetchAgentNumbers();
+  if (!allNumbers.length) {
+    console.log("No agent numbers found in sheet");
+    return;
+  }
 
-// ── AC STATUS REMINDER — every 2 hours ────────────────────────
+  // Only send to numbers NOT already sent to
+  const sentNumbers = loadSentNumbers();
+  const newNumbers = allNumbers.filter(n => !sentNumbers.has(n));
+
+  console.log(`📊 Total in sheet: ${allNumbers.length} | Already sent: ${sentNumbers.size} | New today: ${newNumbers.length}`);
+
+  if (!newNumbers.length) {
+    console.log("No new numbers to send today — all already received the message");
+    return;
+  }
+
+  const phoneId = process.env.WA_PHONE_NUMBER_ID;
+  const token = process.env.WA_ACCESS_TOKEN;
+  let sent = 0, failed = 0;
+
+  for (const number of newNumbers) {
+    try {
+      await axios.post(
+        `https://graph.facebook.com/v25.0/${phoneId}/messages`,
+        {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: number,
+          type: "template",
+          template: {
+            name: MARKETING_TEMPLATE,
+            language: { code: "en" }
+          }
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
+      sentNumbers.add(number); // Mark as sent
+      sent++;
+      console.log(`✓ Marketing SMS sent to ${number} (${sent}/${newNumbers.length})`);
+      await new Promise(r => setTimeout(r, 500)); // avoid rate limiting
+    } catch (err) {
+      failed++;
+      console.error(`✗ Failed to send to ${number}:`, err.response?.data?.error?.message || err.message);
+    }
+  }
+
+  // Save updated sent list
+  saveSentNumbers(sentNumbers);
+  console.log(`📣 Done: ${sent} sent, ${failed} failed. Total ever sent: ${sentNumbers.size}`);
+}
+
+// Run at 10:00 AM IST (04:30 UTC) every day
+cron.schedule("30 4 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" });
+console.log("📣 Daily marketing SMS scheduled at 10:00 AM IST");
+
+// Manual trigger endpoint
+app.post("/send-marketing", async (req, res) => {
+  res.json({ success: true, message: "Marketing SMS started" });
+  await sendMarketingSMS();
+});
+
+// Check status endpoint
+app.get("/marketing-status", (req, res) => {
+  const sent = loadSentNumbers();
+  res.json({ totalSent: sent.size, numbers: [...sent] });
+});
+
+// Reset sent list (if you want to resend to everyone)
+app.post("/marketing-reset", (req, res) => {
+  saveSentNumbers(new Set());
+  res.json({ success: true, message: "Sent list cleared — will send to all numbers tomorrow" });
+});
+
+// ── AC STATUS REMINDER — every 2 hours ─────────────────────────
 const AC_REMINDER_PHONE = "918627038322";
 const AC_TEMPLATE_NAME = "ac_status_reminder";
 
 async function sendACReminder() {
   try {
-    const { sendTemplate } = require("./whatsapp");
-    const result = await sendTemplate(AC_REMINDER_PHONE, AC_TEMPLATE_NAME);
-    console.log(`✓ AC reminder (template) sent to ${AC_REMINDER_PHONE}:`, result?.messages?.[0]?.id);
+    const phoneId = process.env.WA_PHONE_NUMBER_ID;
+    const token = process.env.WA_ACCESS_TOKEN;
+    if (!phoneId || !token) { console.log("AC reminder: WA credentials not set"); return; }
+
+    // Try plain text first
+    try {
+      const res = await axios.post(
+        `https://graph.facebook.com/v25.0/${phoneId}/messages`,
+        { messaging_product: "whatsapp", recipient_type: "individual", to: AC_REMINDER_PHONE,
+          type: "text", text: { body: "Kindly update AC status on group 🙏" } },
+        { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } }
+      );
+      console.log(`✓ AC reminder sent:`, res.data?.messages?.[0]?.id);
+    } catch(textErr) {
+      // Fallback to template
+      const res = await axios.post(
+        `https://graph.facebook.com/v25.0/${phoneId}/messages`,
+        { messaging_product: "whatsapp", recipient_type: "individual", to: AC_REMINDER_PHONE,
+          type: "template", template: { name: AC_TEMPLATE_NAME, language: { code: "en" } } },
+        { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } }
+      );
+      console.log(`✓ AC reminder (template) sent:`, res.data?.messages?.[0]?.id);
+    }
   } catch (err) {
     console.error("✗ AC reminder error:", err.response?.data || err.message);
   }
 }
 
-// Send every 2 hours (7200000 ms)
 setInterval(sendACReminder, 2 * 60 * 60 * 1000);
-
-// Also send once on server start (after 10 seconds)
 setTimeout(sendACReminder, 10000);
-
 console.log("⏰ AC status reminder scheduled every 2 hours to " + AC_REMINDER_PHONE);
