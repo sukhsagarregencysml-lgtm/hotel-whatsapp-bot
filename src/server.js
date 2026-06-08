@@ -226,7 +226,7 @@ async function sendMarketingSMS() {
                   {
                     type: "image",
                     image: {
-                      link: "https://scontent.whatsapp.net/v/t61.29466-34/699230531_2170555060345351_2165992178531552281_n.jpg?ccb=1-7&_nc_sid=8b1bef&_nc_ohc=GONDGXYFKGcQ7kNvwEKBphh&_nc_oc=AdoRCI3DwQ8s62fC71rq-tUOSlaOUBb6uV7wN__r9Hh_eOANcmGrGZM3ZsU7KSkN_M8EznbXZ_qsmiNy_Nodo31P&_nc_zt=3&_nc_ht=scontent.whatsapp.net&edm=AH51TzQEAAAA&_nc_gid=83dFVSenfInsx1NzTTVoYQ&oh=01_Q5Aa4wGJ1NBWt408s9M4Pyyxlbdam8OZxiqmdqGKaainORH-KA&oe=6A4DF90E"
+                      id: "1567521214956263"
                     }
                   }
                 ]
@@ -260,36 +260,22 @@ async function sendMarketingSMS() {
 cron.schedule("30 4 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" });
 console.log("📣 Daily marketing SMS scheduled at 10:00 AM IST");
 
-const ADMIN_SECRET = process.env.ADMIN_SECRET || "hotelease2026";
-function checkAdmin(req, res) {
-  const key = req.headers["x-admin-key"] || req.query.key;
-  if (key !== ADMIN_SECRET) { res.status(403).json({ error: "Unauthorized" }); return false; }
-  return true;
-}
-
-// GET — open in browser to trigger
-app.get("/send-marketing-now", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  res.json({ success: true, message: "Marketing SMS started — check Render logs" });
-  sendMarketingSMS();
-});
-
+// Manual trigger endpoint
 app.post("/send-marketing", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
   res.json({ success: true, message: "Marketing SMS started" });
-  sendMarketingSMS();
+  await sendMarketingSMS();
 });
 
+// Check status endpoint
 app.get("/marketing-status", (req, res) => {
-  if (!checkAdmin(req, res)) return;
   const sent = loadSentNumbers();
   res.json({ totalSent: sent.size, numbers: [...sent] });
 });
 
-app.get("/marketing-reset", (req, res) => {
-  if (!checkAdmin(req, res)) return;
+// Reset sent list (if you want to resend to everyone)
+app.post("/marketing-reset", (req, res) => {
   saveSentNumbers(new Set());
-  res.json({ success: true, message: "Sent list cleared" });
+  res.json({ success: true, message: "Sent list cleared — will send to all numbers tomorrow" });
 });
 
 // ── AC STATUS REMINDER — every 2 hours ─────────────────────────
