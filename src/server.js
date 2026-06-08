@@ -218,7 +218,20 @@ async function sendMarketingSMS() {
           type: "template",
           template: {
             name: MARKETING_TEMPLATE,
-            language: { code: "en_US" }
+            language: { code: "en" },
+            components: [
+              {
+                type: "header",
+                parameters: [
+                  {
+                    type: "image",
+                    image: {
+                      link: "https://scontent.whatsapp.net/v/t61.29466-34/699230531_2170555060345351_2165992178531552281_n.jpg?ccb=1-7&_nc_sid=8b1bef&_nc_ohc=GONDGXYFKGcQ7kNvwEKBphh&_nc_oc=AdoRCI3DwQ8s62fC71rq-tUOSlaOUBb6uV7wN__r9Hh_eOANcmGrGZM3ZsU7KSkN_M8EznbXZ_qsmiNy_Nodo31P&_nc_zt=3&_nc_ht=scontent.whatsapp.net&edm=AH51TzQEAAAA&_nc_gid=83dFVSenfInsx1NzTTVoYQ&oh=01_Q5Aa4wGJ1NBWt408s9M4Pyyxlbdam8OZxiqmdqGKaainORH-KA&oe=6A4DF90E"
+                    }
+                  }
+                ]
+              }
+            ]
           }
         },
         {
