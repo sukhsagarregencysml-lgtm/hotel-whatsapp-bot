@@ -109,11 +109,25 @@ app.post("/send-checkin", async (req, res) => {
     const { registerGuestForServices } = require("./guest-services");
     registerGuestForServices(phone, guestName, hotelName, room, checkout, hotelId);
 
-    // Send approved guest_services_menu template 30 seconds later
+    // Send guest_services_menu template 30 seconds later with portal link
+    const reservationId = req.body.reservationId;
     setTimeout(async () => {
       try {
-        await wa.sendTemplate(phone, "guest_services_menu", [guestName, hotelName || "Hotel"]);
-        console.log(`✓ Service menu template sent to ${phone}`);
+        const portalLink = reservationId ? `https://api.optisetup.in/guest/${reservationId}` : null;
+        if (portalLink) {
+          // Send portal link as text (within 24hr window after check-in template)
+          const { sendMessage } = require("./whatsapp");
+          await sendMessage(phone,
+            `🏨 *${hotelName} — Guest Services*\n\n` +
+            `Dear *${guestName}*, tap the link below to:\n\n` +
+            `🛏 Request Housekeeping\n🍽 Order Room Dining\n🔧 Report Maintenance\n📞 Contact Front Desk\n\n` +
+            `👉 ${portalLink}\n\n` +
+            `_Available 24/7 for your comfort_`
+          );
+        } else {
+          await wa.sendTemplate(phone, "guest_services_menu", [guestName, hotelName || "Hotel"]);
+        }
+        console.log(`✓ Service menu sent to ${phone}`);
       } catch(e) { console.log("Service menu error:", e.message); }
     }, 30000);
 
@@ -158,6 +172,19 @@ app.post("/send-precheckin", async (req, res) => {
       guestName, hotelName || "Hotel", checkinDate, checkinLink
     ]);
     res.json({ success: true, message: "Booking confirmation sent to " + phone, meta: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -- POST /send-staff-alert -- notify staff of guest orders --------
+app.post("/send-staff-alert", async (req, res) => {
+  try {
+    const { message } = req.body;
+    const { sendMessage } = require("./whatsapp");
+    const staffPhone = process.env.HOD_FRONTDESK || '919816003322';
+    await sendMessage(staffPhone, message);
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
