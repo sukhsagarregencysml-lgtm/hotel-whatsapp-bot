@@ -164,10 +164,10 @@ Object.values(DEPARTMENTS).forEach(dept => {
 });
 
 // ── REGISTER GUEST ────────────────────────────────────────────────
-function registerGuestForServices(phone, guestName, hotelName, roomNumber, checkoutDate, hotelId = null) {
+function registerGuestForServices(phone, guestName, hotelName, roomNumber, checkoutDate, hotelId = null, reservationId = null) {
   const cleanPhone = phone.replace(/[^0-9]/g, '');
   const waPhone = cleanPhone.startsWith('91') ? cleanPhone : '91' + cleanPhone;
-  guestRoomMap[waPhone] = { hotelId, roomNumber, guestName, hotelName, checkoutDate, registeredAt: new Date().toISOString() };
+  guestRoomMap[waPhone] = { hotelId, roomNumber, guestName, hotelName, checkoutDate, reservationId, registeredAt: new Date().toISOString() };
   console.log(`✅ Guest registered: ${waPhone} → Room ${roomNumber}`);
 }
 
@@ -539,23 +539,55 @@ async function handleGuestServices(phone, text, buttonId, wa) {
     if (buttonId === 'menu_main' || buttonId === 'menu_back') {
       await sendServiceMenu(phone, wa); return true;
     }
+    // Send portal link for service buttons
+    const portalBase = guest?.reservationId ? `https://api.optisetup.in/guest/${guest.reservationId}` : null;
     if (buttonId === 'menu_hk') {
-      await sendHousekeepingList(phone, wa); return true;
+      if (portalBase) {
+        await wa.sendMessage(phone, `🛏 *Housekeeping Request*\n\nTap the link to select what you need:\n👉 ${portalBase}#hk`);
+      } else {
+        await sendHousekeepingList(phone, wa);
+      }
+      return true;
     }
     if (buttonId === 'menu_food') {
-      await sendFoodList(phone, wa); return true;
+      if (portalBase) {
+        await wa.sendMessage(phone, `🍽 *Room Dining*\n\nView our full menu with prices & place your order:\n👉 ${portalBase}#food`);
+      } else {
+        await sendFoodList(phone, wa);
+      }
+      return true;
     }
     if (buttonId === 'menu_more') {
-      await sendMoreServicesMenu(phone, wa); return true;
+      if (portalBase) {
+        await wa.sendMessage(phone, `📋 *More Services*\n\nMaintenance, front desk, laundry & more:\n👉 ${portalBase}#mt`);
+      } else {
+        await sendMoreServicesMenu(phone, wa);
+      }
+      return true;
     }
     if (buttonId === 'menu_mt') {
-      await sendMaintenanceList(phone, wa); return true;
+      if (portalBase) {
+        await wa.sendMessage(phone, `🔧 *Maintenance*\n\nReport an issue:\n👉 ${portalBase}#mt`);
+      } else {
+        await sendMaintenanceList(phone, wa);
+      }
+      return true;
     }
     if (buttonId === 'menu_fd') {
-      await sendFrontDeskList(phone, wa); return true;
+      if (portalBase) {
+        await wa.sendMessage(phone, `📞 *Front Desk*\n\nCab, luggage, doctor & more:\n👉 ${portalBase}#fd`);
+      } else {
+        await sendFrontDeskList(phone, wa);
+      }
+      return true;
     }
     if (buttonId === 'menu_ly') {
-      await sendLaundryList(phone, wa); return true;
+      if (portalBase) {
+        await wa.sendMessage(phone, `👗 *Laundry*\n\nRequest laundry service:\n👉 ${portalBase}#fd`);
+      } else {
+        await sendLaundryList(phone, wa);
+      }
+      return true;
     }
     if (buttonId === 'menu_fb') {
       await startFeedback(phone, guest.guestName, wa); return true;

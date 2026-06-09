@@ -122,9 +122,10 @@ app.post("/send-checkin", async (req, res) => {
       await wa.sendHotelCheckin(phone, { hotelName, guestName, room, checkout, plan, wifi });
     }
 
-    // Register guest for service requests
+    // Register guest for service requests (include reservationId for portal links)
     const { registerGuestForServices } = require("./guest-services");
-    registerGuestForServices(phone, guestName, hotelName, room, checkout, hotelId);
+    const reservationId = req.body.reservationId || null;
+    registerGuestForServices(phone, guestName, hotelName, room, checkout, hotelId, reservationId);
     // Note: service menu is sent by PMS VPS after 30s (Render sleeps and loses setTimeout)
 
     res.json({ success: true, message: "Check-in message sent to " + phone, template: sentTemplate });
