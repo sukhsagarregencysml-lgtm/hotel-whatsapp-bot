@@ -525,6 +525,12 @@ async function handleGuestServices(phone, text, buttonId, wa) {
 
   // Button interactions
   if (buttonId) {
+    // Normalize template button titles → internal IDs
+    const btnNorm = buttonId.toLowerCase().replace(/[^a-z0-9]/g,'');
+    if (btnNorm.includes('housekeep') || btnNorm === 'menuhk') buttonId = 'menu_hk';
+    else if (btnNorm.includes('dining') || btnNorm.includes('food') || btnNorm.includes('room') || btnNorm === 'menufood') buttonId = 'menu_food';
+    else if (btnNorm.includes('more') || btnNorm.includes('service') || btnNorm === 'menumore') buttonId = 'menu_more';
+
     // Rating buttons
     if (['rating_5','rating_4','rating_low'].includes(buttonId)) {
       return await handleFeedback(phone, buttonId, text, wa);

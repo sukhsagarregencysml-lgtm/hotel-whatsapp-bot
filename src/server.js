@@ -32,18 +32,35 @@ app.post("/webhook", async (req, res) => {
 
     let text = "";
     let mediaId = null;
+    let buttonId = null;
 
     if (msgType === "text") {
       text = msg.text?.body || "";
     } else if (msgType === "image") {
       mediaId = msg.image?.id || null;
       text = msg.image?.caption || "";
+    } else if (msgType === "interactive") {
+      const interactive = msg.interactive;
+      if (interactive?.type === "button_reply") {
+        // Quick reply button from template
+        buttonId = interactive.button_reply?.id || "";
+        text = interactive.button_reply?.title || "";
+      } else if (interactive?.type === "list_reply") {
+        buttonId = interactive.list_reply?.id || "";
+        text = interactive.list_reply?.title || "";
+      } else {
+        return;
+      }
+    } else if (msgType === "button") {
+      // Template quick reply (older WhatsApp API format)
+      buttonId = msg.button?.payload || "";
+      text = msg.button?.text || buttonId;
     } else {
-      return; // ignore other types
+      return;
     }
 
-    console.log(`📨 From ${from} [${msgType}]: ${text}`);
-    await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId });
+    console.log(`📨 From ${from} [${msgType}]: ${text} ${buttonId ? '(btn:'+buttonId+')' : ''}`);
+    await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId, buttonId });
   } catch (err) {
     console.error("Webhook error:", err.message);
   }
