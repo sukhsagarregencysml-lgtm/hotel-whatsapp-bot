@@ -123,7 +123,7 @@ app.post("/send-service-menu", async (req, res) => {
     if (!phone) return res.status(400).json({ error: "phone required" });
     const wa = require("./whatsapp");
     // Send approved template with buttons
-    await wa.sendTemplate(phone, "guest_services_menu", [guestName || "Guest", hotelName || "Hotel"]);
+    await wa.sendTemplate(phone, "guest_services_menu", [guestName || "Guest"]);
     console.log(`✓ Service menu sent to ${phone}`);
     // Send portal link 3 seconds later
     if (reservationId) {
