@@ -138,6 +138,27 @@ app.post("/send-checkout", async (req, res) => {
   }
 });
 
+// -- POST /send-precheckin -- called by PMS when booking is created ─
+app.post("/send-precheckin", async (req, res) => {
+  try {
+    const { phone, guestName, hotelName, checkinDate, checkinLink } = req.body;
+    if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName required" });
+    const { sendMessage } = require("./whatsapp");
+    const msg =
+      `Dear *${guestName}*,\n\n` +
+      `Your booking at *${hotelName}* is confirmed! 🎉\n\n` +
+      `📅 Check-in: *${checkinDate}*\n\n` +
+      `Save time at check-in — complete your *Online Pre Check-in* now:\n` +
+      `👇 ${checkinLink}\n\n` +
+      `Fill your ID details & arrival time in advance for a smooth check-in experience.\n\n` +
+      `See you soon! 🏨`;
+    await sendMessage(phone, msg);
+    res.json({ success: true, message: "Pre check-in link sent to " + phone });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, "0.0.0.0", () => console.log(`Server running on port ${PORT}`));
 
