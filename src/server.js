@@ -108,26 +108,33 @@ app.post("/send-checkin", async (req, res) => {
     // Register guest for service requests
     const { registerGuestForServices } = require("./guest-services");
     registerGuestForServices(phone, guestName, hotelName, room, checkout, hotelId);
-
-    // Send guest_services_menu approved template 30 seconds after check-in
-    const reservationId = req.body.reservationId;
-    setTimeout(async () => {
-      try {
-        // Always use approved template — works outside 24hr window
-        await wa.sendTemplate(phone, "guest_services_menu", [guestName, hotelName || "Hotel"]);
-        console.log(`✓ Service menu template sent to ${phone}`);
-        // Send portal link as a follow-up text message (guest can now reply since template was sent)
-        if (reservationId) {
-          await new Promise(r => setTimeout(r, 3000));
-          const { sendMessage } = require("./whatsapp");
-          const portalLink = `https://api.optisetup.in/guest/${reservationId}`;
-          await sendMessage(phone, `👉 *Tap here to order or request services:*\n${portalLink}`);
-          console.log(`✓ Portal link sent to ${phone}`);
-        }
-      } catch(e) { console.log("Service menu error:", e.message); }
-    }, 30000);
+    // Note: service menu is sent by PMS VPS after 30s (Render sleeps and loses setTimeout)
 
     res.json({ success: true, message: "Check-in message sent to " + phone, template: sentTemplate });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -- POST /send-service-menu -- called by PMS VPS after 30s --------
+app.post("/send-service-menu", async (req, res) => {
+  try {
+    const { phone, guestName, hotelName, reservationId } = req.body;
+    if (!phone) return res.status(400).json({ error: "phone required" });
+    const wa = require("./whatsapp");
+    // Send approved template with buttons
+    await wa.sendTemplate(phone, "guest_services_menu", [guestName || "Guest", hotelName || "Hotel"]);
+    console.log(`✓ Service menu sent to ${phone}`);
+    // Send portal link 3 seconds later
+    if (reservationId) {
+      setTimeout(async () => {
+        try {
+          const { sendMessage } = require("./whatsapp");
+          await sendMessage(phone, `👉 *Order food, request housekeeping & more:*\nhttps://api.optisetup.in/guest/${reservationId}`);
+        } catch(e) { console.log("Portal link error:", e.message); }
+      }, 3000);
+    }
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
