@@ -93,23 +93,31 @@ app.post("/send-optin", async (req, res) => {
 // -- POST /send-checkin -- called by PMS on check-in ---------------
 app.post("/send-checkin", async (req, res) => {
   try {
-    const { phone, guestName, hotelName, room, checkout, plan, wifi } = req.body;
-    const { sendMessage } = require("./whatsapp");
+    const { phone, guestName, hotelName, room, checkout, plan, wifi, hotelId } = req.body;
+    const wa = require("./whatsapp");
 
-    const msg =
-      `Welcome to ${hotelName}! 🏨\n\n` +
-      `Dear ${guestName},\n\n` +
-      `You are now checked in. Here are your details:\n\n` +
-      `Room: ${room}\n` +
-      `Check-out: ${checkout}\n` +
-      `Plan: ${plan}\n` +
-      `WiFi: ${wifi}\n\n` +
-      `For assistance please call reception.\n\n` +
-      `We wish you a wonderful stay!\n` +
-      `Team ${hotelName}`;
+    // Send check-in confirmation using approved template
+    let sentTemplate = "hotel_checkin";
+    try {
+      await wa.sendGuestCheckIn(phone, { hotelName, guestName, room, checkout, plan, wifi });
+      sentTemplate = "guest_check_in";
+    } catch(e) {
+      await wa.sendHotelCheckin(phone, { hotelName, guestName, room, checkout, plan, wifi });
+    }
 
-    await sendMessage(phone, msg);
-    res.json({ success: true, message: "Check-in message sent to " + phone });
+    // Register guest for service requests
+    const { registerGuestForServices } = require("./guest-services");
+    registerGuestForServices(phone, guestName, hotelName, room, checkout, hotelId);
+
+    // Send approved guest_services_menu template 30 seconds later
+    setTimeout(async () => {
+      try {
+        await wa.sendTemplate(phone, "guest_services_menu", [guestName, hotelName || "Hotel"]);
+        console.log(`✓ Service menu template sent to ${phone}`);
+      } catch(e) { console.log("Service menu error:", e.message); }
+    }, 30000);
+
+    res.json({ success: true, message: "Check-in message sent to " + phone, template: sentTemplate });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -143,17 +151,13 @@ app.post("/send-precheckin", async (req, res) => {
   try {
     const { phone, guestName, hotelName, checkinDate, checkinLink } = req.body;
     if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName required" });
-    const { sendMessage } = require("./whatsapp");
-    const msg =
-      `Dear *${guestName}*,\n\n` +
-      `Your booking at *${hotelName}* is confirmed! 🎉\n\n` +
-      `📅 Check-in: *${checkinDate}*\n\n` +
-      `Save time at check-in — complete your *Online Pre Check-in* now:\n` +
-      `👇 ${checkinLink}\n\n` +
-      `Fill your ID details & arrival time in advance for a smooth check-in experience.\n\n` +
-      `See you soon! 🏨`;
-    await sendMessage(phone, msg);
-    res.json({ success: true, message: "Pre check-in link sent to " + phone });
+    const wa = require("./whatsapp");
+    // Use approved booking_confirmation template
+    // Variables: {{1}}=guestName, {{2}}=hotelName, {{3}}=checkinDate, {{4}}=checkinLink
+    const result = await wa.sendTemplate(phone, "booking_confirmation", [
+      guestName, hotelName || "Hotel", checkinDate, checkinLink
+    ]);
+    res.json({ success: true, message: "Booking confirmation sent to " + phone, meta: result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
