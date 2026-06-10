@@ -181,6 +181,39 @@ app.post("/send-checkout", async (req, res) => {
   }
 });
 
+// -- POST /register-payment -- called by PMS after website booking ──
+// Registers the pending payment so when guest sends screenshot,
+// bot routes it to admin with APPROVE/REJECT — same as agent flow.
+app.post("/register-payment", async (req, res) => {
+  try {
+    const { phone, guestName, reservationNo, amount, total, checkinDate, checkoutDate, roomTypeName } = req.body;
+    if (!phone || !reservationNo || !amount) {
+      return res.status(400).json({ error: "phone, reservationNo and amount required" });
+    }
+    const { pendingPayments } = require("./handler");
+    pendingPayments[phone] = {
+      agentName: guestName,
+      agentPhone: phone,
+      guestName,
+      voucherNo: reservationNo,
+      amount: parseFloat(amount),
+      total: parseFloat(total || amount),
+      remaining: 0,
+      ciDate: checkinDate,
+      coDate: checkoutDate,
+      roomTypeName,
+      paidSoFar: 0,
+      paymentStep: 1,
+      source: "website",
+    };
+    console.log(`✓ Pending payment registered for ${phone} — ${reservationNo}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("register-payment error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // -- POST /send-precheckin -- called by PMS when booking is created ─
 app.post("/send-precheckin", async (req, res) => {
   try {
@@ -193,6 +226,51 @@ app.post("/send-precheckin", async (req, res) => {
       guestName, hotelName || "Hotel", checkinDate, checkinLink
     ]);
     res.json({ success: true, message: "Booking confirmation sent to " + phone, meta: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -- POST /send-booking-website -- booking from hotel website ------
+app.post("/send-booking-website", async (req, res) => {
+  try {
+    const { phone, guestName, hotelName, reservationNo, roomType,
+            checkinDate, checkoutDate, nights, rooms, plan, totalAmount, upiId } = req.body;
+    if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName required" });
+    const { sendMessage } = require("./whatsapp");
+
+    const msg =
+      `🏨 *Booking Confirmed — ${hotelName}*\n\n` +
+      `Dear *${guestName}*,\n\n` +
+      `Your booking has been received! Here are your details:\n\n` +
+      `📋 Booking ID: *${reservationNo}*\n` +
+      `🛏 Room: *${roomType}*\n` +
+      `📅 Check-in: *${checkinDate}*\n` +
+      `📅 Check-out: *${checkoutDate}*\n` +
+      `🌙 Nights: *${nights}*\n` +
+      `🍽 Plan: *${plan}*\n` +
+      `🏠 Rooms: *${rooms}*\n` +
+      `💰 Total: *₹${Number(totalAmount).toLocaleString('en-IN')}*\n\n` +
+      (upiId
+        ? `*Payment:* Please pay ₹${Number(totalAmount).toLocaleString('en-IN')} via UPI to confirm your booking.\n\n📲 *UPI ID: ${upiId}*\n\nAfter payment, please send the screenshot to confirm your booking.`
+        : `*Payment:* Please contact the hotel to arrange payment and confirm your booking.`);
+
+    await sendMessage(phone, msg);
+
+    // Send UPI QR if configured
+    if (upiId && totalAmount > 0) {
+      const upiLink = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(hotelName)}&am=${totalAmount}&cu=INR&tn=${encodeURIComponent('Booking '+reservationNo)}`;
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(upiLink)}`;
+      // Send QR code image
+      try {
+        const axios = require('axios');
+        const wa = require("./whatsapp");
+        // Send as image URL via WhatsApp
+        await sendMessage(phone, `📲 *Scan QR to Pay ₹${Number(totalAmount).toLocaleString('en-IN')}*\n\n${qrUrl}\n\nOr pay directly to UPI: *${upiId}*`);
+      } catch(e) { console.log('QR send error:', e.message); }
+    }
+
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
