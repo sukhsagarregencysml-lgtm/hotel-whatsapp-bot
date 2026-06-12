@@ -66,13 +66,14 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
     if (!global.enquiryTracker) global.enquiryTracker = {};
     const tracker = global.enquiryTracker;
 
-    // Clear existing timer for this number
+    // Clear existing timer
     if (tracker[from]?.timer) clearTimeout(tracker[from].timer);
 
     // Store/update this message
     if (!tracker[from]) {
-      tracker[from] = { firstMsg: text || "[media]", startTime: new Date(), booked: false };
+      tracker[from] = { firstMsg: text || "[media]", startTime: new Date(), booked: false, msgs: [] };
     }
+    if (text) tracker[from].msgs.push(text.slice(0, 50));
     tracker[from].lastMsg = text || "[media]";
     tracker[from].lastTime = new Date();
 
@@ -83,19 +84,23 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
         if (!info) return;
         const senderAgent = await getAgent(from);
         const senderName = senderAgent?.name || "Unknown";
-        const duration = Math.round((info.lastTime - info.startTime) / 60000);
+        const duration = Math.round((new Date() - info.startTime) / 60000);
         const status = info.booked
-          ? `✅ *BOOKED* — Voucher: ${info.voucherNo || "Generated"}`
-          : `❌ *NOT BOOKED* — No booking after ${duration} min`;
-        await sendReminder(ADMIN_PHONE,
-          `📊 *ENQUIRY SUMMARY*\n\n` +
-          `Agent: ${senderName} (${from})\n` +
-          `First msg: ${info.firstMsg?.slice(0, 80)}\n` +
-          `Status: ${status}`
+          ? `✅ *BOOKED* — Voucher: ${info.voucherNo || "Confirmed"}`
+          : `❌ *NOT BOOKED* — Enquiry only`;
+        const msgLog = info.msgs.slice(0, 3).join(" | ");
+
+        // Use sendMessage (plain text) to ensure delivery
+        await sendMessage(ADMIN_PHONE,
+          `📊 *ENQUIRY SUMMARY (${duration} mins)*\n\n` +
+          `👤 ${senderName}\n` +
+          `📱 ${from}\n` +
+          `💬 ${msgLog}\n\n` +
+          `${status}`
         );
         delete tracker[from];
       } catch(e) { console.error("Enquiry tracker error:", e.message); }
-    }, 10 * 60 * 1000); // 10 minutes
+    }, 10 * 60 * 1000);
   }
 
   // -- PAYMENT SCREENSHOT HANDLER -----------------------------------------
