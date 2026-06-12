@@ -98,6 +98,8 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
           `💬 ${msgLog}\n\n` +
           `${status}`
         );
+        // Reset session after 10 mins inactivity
+        if (sessions[from]) sessions[from] = { step: "idle" };
         delete tracker[from];
       } catch(e) { console.error("Enquiry tracker error:", e.message); }
     }, 10 * 60 * 1000);
@@ -406,21 +408,31 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
       `We are checking availability...`;
     await sendMessage(from, ackMsg);
 
-    // Ask for missing info
+    // Ask for missing info step by step
     if (!session.coDate) {
       session.step = "awaiting_checkout";
-      await sendMessage(from, `Could you please share the *check-out date*?\n\nExample: *12 July*`);
+      await sendMessage(from, `Dear *${agent.name}*,\n\nWhat is the *check-out date*?\n\nExample: *24 July*`);
+      return;
+    }
+
+    if (!session.rooms || session.rooms < 1) {
+      session.step = "awaiting_rooms";
+      await sendMessage(from,
+        `Dear *${agent.name}*,\n\nHow many rooms do you need?\n\n` +
+        `Reply with number and type:\n` +
+        `*1 deluxe* or *2 dlx* or *1 super* or *1 honey*`
+      );
       return;
     }
 
     if (!session.plan) {
       session.step = "awaiting_plan";
       await sendMessage(from,
-        `Could you please share the *meal plan*?\n\nReply with:\n` +
-        `*CP* - Continental Plan (with breakfast)\n` +
-        `*MAP* - Modified American Plan (breakfast + dinner)\n` +
-        `*MAPAI* - MAP with GST included\n` +
-        `*EP* - European Plan (room only)`
+        `Dear *${agent.name}*,\n\nWhich meal plan?\n\n` +
+        `*CP* — Breakfast only\n` +
+        `*MAP* — Breakfast + Dinner\n` +
+        `*MAPAI* — Breakfast + Dinner (GST incl.)\n` +
+        `*EP* — Room only`
       );
       return;
     }
@@ -431,6 +443,33 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
 
   // -- HANDLE PARTIAL MESSAGES (multi-message support) --------------------
   // If session has some data already, try to fill in missing pieces
+  // Step: awaiting rooms count/type
+  if (session.step === "awaiting_rooms") {
+    const roomParsed = parseEnquiry(text + " 22july 24july");
+    if (roomParsed?.rooms || /\d+/.test(text)) {
+      session.rooms = roomParsed?.rooms || parseInt(text.match(/\d+/)?.[0]) || 1;
+      session.roomType = roomParsed?.roomType || session.roomType || "deluxe";
+      session.roomTypes = roomParsed?.roomTypes || null;
+      // Now ask for plan
+      if (!session.plan) {
+        session.step = "awaiting_plan";
+        await sendMessage(from,
+          `Dear *${agent.name}*,\n\nWhich meal plan?\n\n` +
+          `*CP* — Breakfast only\n` +
+          `*MAP* — Breakfast + Dinner\n` +
+          `*MAPAI* — Breakfast + Dinner (GST incl.)\n` +
+          `*EP* — Room only`
+        );
+      } else {
+        session.step = "idle";
+        await checkAndRespond(from, agent, session);
+      }
+    } else {
+      await sendMessage(from, `Please reply with rooms and type, e.g. *2 deluxe* or *1 honeymoon*`);
+    }
+    return;
+  }
+
   if (session.ciDate && !session.coDate) {
     const parsed = parseEnquiry("dlx " + text);
     if (parsed?.ciDate) {
