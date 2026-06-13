@@ -32,35 +32,18 @@ app.post("/webhook", async (req, res) => {
 
     let text = "";
     let mediaId = null;
-    let buttonId = null;
 
     if (msgType === "text") {
       text = msg.text?.body || "";
     } else if (msgType === "image") {
       mediaId = msg.image?.id || null;
       text = msg.image?.caption || "";
-    } else if (msgType === "interactive") {
-      const interactive = msg.interactive;
-      if (interactive?.type === "button_reply") {
-        // Quick reply button from template
-        buttonId = interactive.button_reply?.id || "";
-        text = interactive.button_reply?.title || "";
-      } else if (interactive?.type === "list_reply") {
-        buttonId = interactive.list_reply?.id || "";
-        text = interactive.list_reply?.title || "";
-      } else {
-        return;
-      }
-    } else if (msgType === "button") {
-      // Template quick reply (older WhatsApp API format)
-      buttonId = msg.button?.payload || "";
-      text = msg.button?.text || buttonId;
     } else {
-      return;
+      return; // ignore other types
     }
 
-    console.log(`📨 From ${from} [${msgType}]: ${text} ${buttonId ? '(btn:'+buttonId+')' : ''}`);
-    await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId, buttonId });
+    console.log(`📨 From ${from} [${msgType}]: ${text}`);
+    await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId });
   } catch (err) {
     console.error("Webhook error:", err.message);
   }
@@ -110,49 +93,23 @@ app.post("/send-optin", async (req, res) => {
 // -- POST /send-checkin -- called by PMS on check-in ---------------
 app.post("/send-checkin", async (req, res) => {
   try {
-    const { phone, guestName, hotelName, room, checkout, plan, wifi, hotelId } = req.body;
-    const wa = require("./whatsapp");
+    const { phone, guestName, hotelName, room, checkout, plan, wifi } = req.body;
+    const { sendMessage } = require("./whatsapp");
 
-    // Send check-in confirmation using approved template
-    let sentTemplate = "hotel_checkin";
-    try {
-      await wa.sendGuestCheckIn(phone, { hotelName, guestName, room, checkout, plan, wifi });
-      sentTemplate = "guest_check_in";
-    } catch(e) {
-      await wa.sendHotelCheckin(phone, { hotelName, guestName, room, checkout, plan, wifi });
-    }
+    const msg =
+      `Welcome to ${hotelName}! 🏨\n\n` +
+      `Dear ${guestName},\n\n` +
+      `You are now checked in. Here are your details:\n\n` +
+      `Room: ${room}\n` +
+      `Check-out: ${checkout}\n` +
+      `Plan: ${plan}\n` +
+      `WiFi: ${wifi}\n\n` +
+      `For assistance please call reception.\n\n` +
+      `We wish you a wonderful stay!\n` +
+      `Team ${hotelName}`;
 
-    // Register guest for service requests (include reservationId for portal links)
-    const { registerGuestForServices } = require("./guest-services");
-    const reservationId = req.body.reservationId || null;
-    registerGuestForServices(phone, guestName, hotelName, room, checkout, hotelId, reservationId);
-    // Note: service menu is sent by PMS VPS after 30s (Render sleeps and loses setTimeout)
-
-    res.json({ success: true, message: "Check-in message sent to " + phone, template: sentTemplate });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// -- POST /send-service-menu -- called by PMS VPS after 30s --------
-app.post("/send-service-menu", async (req, res) => {
-  try {
-    const { phone, guestName, hotelName, reservationId } = req.body;
-    if (!phone) return res.status(400).json({ error: "phone required" });
-    const wa = require("./whatsapp");
-    // Send approved template with buttons
-    await wa.sendTemplate(phone, "guest_services_menu", [guestName || "Guest"]);
-    console.log(`✓ Service menu sent to ${phone}`);
-    // Send portal link 3 seconds later
-    if (reservationId) {
-      setTimeout(async () => {
-        try {
-          const { sendMessage } = require("./whatsapp");
-          await sendMessage(phone, `👉 *Order food, request housekeeping & more:*\nhttps://api.optisetup.in/guest/${reservationId}`);
-        } catch(e) { console.log("Portal link error:", e.message); }
-      }, 3000);
-    }
-    res.json({ success: true });
+    await sendMessage(phone, msg);
+    res.json({ success: true, message: "Check-in message sent to " + phone });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -176,114 +133,6 @@ app.post("/send-checkout", async (req, res) => {
 
     await sendMessage(phone, msg);
     res.json({ success: true, message: "Checkout message sent to " + phone });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// -- POST /register-payment -- called by PMS after website booking ──
-// Registers the pending payment so when guest sends screenshot,
-// bot routes it to admin with APPROVE/REJECT — same as agent flow.
-app.post("/register-payment", async (req, res) => {
-  try {
-    const { phone, guestName, reservationNo, amount, total, checkinDate, checkoutDate, roomTypeName } = req.body;
-    if (!phone || !reservationNo || !amount) {
-      return res.status(400).json({ error: "phone, reservationNo and amount required" });
-    }
-    const { pendingPayments } = require("./handler");
-    pendingPayments[phone] = {
-      agentName: guestName,
-      agentPhone: phone,
-      guestName,
-      voucherNo: reservationNo,
-      amount: parseFloat(amount),
-      total: parseFloat(total || amount),
-      remaining: 0,
-      ciDate: checkinDate,
-      coDate: checkoutDate,
-      roomTypeName,
-      paidSoFar: 0,
-      paymentStep: 1,
-      source: "website",
-    };
-    console.log(`✓ Pending payment registered for ${phone} — ${reservationNo}`);
-    res.json({ success: true });
-  } catch (err) {
-    console.error("register-payment error:", err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// -- POST /send-precheckin -- called by PMS when booking is created ─
-app.post("/send-precheckin", async (req, res) => {
-  try {
-    const { phone, guestName, hotelName, checkinDate, checkinLink } = req.body;
-    if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName required" });
-    const wa = require("./whatsapp");
-    // Use approved booking_confirmation template
-    // Variables: {{1}}=guestName, {{2}}=hotelName, {{3}}=checkinDate, {{4}}=checkinLink
-    const result = await wa.sendTemplate(phone, "booking_confirmation", [
-      guestName, hotelName || "Hotel", checkinDate, checkinLink
-    ]);
-    res.json({ success: true, message: "Booking confirmation sent to " + phone, meta: result });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// -- POST /send-booking-website -- booking from hotel website ------
-app.post("/send-booking-website", async (req, res) => {
-  try {
-    const { phone, guestName, hotelName, reservationNo, roomType,
-            checkinDate, checkoutDate, nights, rooms, plan, totalAmount, upiId } = req.body;
-    if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName required" });
-    const { sendMessage } = require("./whatsapp");
-
-    const msg =
-      `🏨 *Booking Confirmed — ${hotelName}*\n\n` +
-      `Dear *${guestName}*,\n\n` +
-      `Your booking has been received! Here are your details:\n\n` +
-      `📋 Booking ID: *${reservationNo}*\n` +
-      `🛏 Room: *${roomType}*\n` +
-      `📅 Check-in: *${checkinDate}*\n` +
-      `📅 Check-out: *${checkoutDate}*\n` +
-      `🌙 Nights: *${nights}*\n` +
-      `🍽 Plan: *${plan}*\n` +
-      `🏠 Rooms: *${rooms}*\n` +
-      `💰 Total: *₹${Number(totalAmount).toLocaleString('en-IN')}*\n\n` +
-      (upiId
-        ? `*Payment:* Please pay ₹${Number(totalAmount).toLocaleString('en-IN')} via UPI to confirm your booking.\n\n📲 *UPI ID: ${upiId}*\n\nAfter payment, please send the screenshot to confirm your booking.`
-        : `*Payment:* Please contact the hotel to arrange payment and confirm your booking.`);
-
-    await sendMessage(phone, msg);
-
-    // Send UPI QR if configured
-    if (upiId && totalAmount > 0) {
-      const upiLink = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(hotelName)}&am=${totalAmount}&cu=INR&tn=${encodeURIComponent('Booking '+reservationNo)}`;
-      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(upiLink)}`;
-      // Send QR code image
-      try {
-        const axios = require('axios');
-        const wa = require("./whatsapp");
-        // Send as image URL via WhatsApp
-        await sendMessage(phone, `📲 *Scan QR to Pay ₹${Number(totalAmount).toLocaleString('en-IN')}*\n\n${qrUrl}\n\nOr pay directly to UPI: *${upiId}*`);
-      } catch(e) { console.log('QR send error:', e.message); }
-    }
-
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// -- POST /send-staff-alert -- notify staff of guest orders --------
-app.post("/send-staff-alert", async (req, res) => {
-  try {
-    const { message } = req.body;
-    const { sendMessage } = require("./whatsapp");
-    const staffPhone = process.env.HOD_FRONTDESK || '919816003322';
-    await sendMessage(staffPhone, message);
-    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -409,34 +258,58 @@ async function sendMarketingSMS() {
 
 // Run at 10:00 AM IST (04:30 UTC) every day
 cron.schedule("30 4 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" });
+
+// Check pending enquiry summaries every 10 minutes
+cron.schedule("*/10 * * * *", async () => {
+  try {
+    const tracker = global.enquiryTracker;
+    if (!tracker) return;
+    const { sendMessage } = require("./whatsapp");
+    const { getAgent } = require("./handler");
+    const ADMIN = process.env.ADMIN_PHONE || "919816003322";
+    const now = Date.now();
+
+    for (const [phone, info] of Object.entries(tracker)) {
+      // If last activity was 10+ mins ago
+      const lastActivity = info.lastActivityTime || info.startTime;
+      if (now - lastActivity >= 10 * 60 * 1000) {
+        try {
+          const duration = Math.round((now - info.startTime) / 60000);
+          const msgLog = (info.msgs || []).slice(0, 3).join(" | ").slice(0, 120);
+          const status = info.booked
+            ? "✅ BOOKED — Voucher: " + (info.voucherNo || "Confirmed")
+            : "❌ NOT BOOKED";
+          await sendMessage(ADMIN,
+            "📊 *ENQUIRY SUMMARY*\n" +
+            "👤 " + phone + "\n" +
+            "💬 " + msgLog + "\n" +
+            "⏱ " + duration + " min | " + status
+          );
+          delete tracker[phone];
+          console.log("Enquiry summary sent for", phone);
+        } catch(e) { console.error("Summary cron error:", e.message); }
+      }
+    }
+  } catch(e) { console.error("Enquiry cron error:", e.message); }
+}, { timezone: "Asia/Kolkata" });
 console.log("📣 Daily marketing SMS scheduled at 10:00 AM IST");
 
-const ADMIN_SECRET = process.env.ADMIN_SECRET || "hotelease2026";
-function checkAdmin(req, res) {
-  const key = req.headers["x-admin-key"] || req.query.key;
-  if (key !== ADMIN_SECRET) { res.status(403).json({ error: "Unauthorized" }); return false; }
-  return true;
-}
-
-// GET — open in browser to send now
-app.get("/send-marketing-now", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  res.json({ success: true, message: "Marketing SMS started — check Render logs" });
-  sendMarketingSMS();
+// Manual trigger endpoint
+app.post("/send-marketing", async (req, res) => {
+  res.json({ success: true, message: "Marketing SMS started" });
+  await sendMarketingSMS();
 });
 
-// GET — check status in browser
+// Check status endpoint
 app.get("/marketing-status", (req, res) => {
-  if (!checkAdmin(req, res)) return;
   const sent = loadSentNumbers();
   res.json({ totalSent: sent.size, numbers: [...sent] });
 });
 
-// GET — reset in browser
-app.get("/marketing-reset", (req, res) => {
-  if (!checkAdmin(req, res)) return;
+// Reset sent list (if you want to resend to everyone)
+app.post("/marketing-reset", (req, res) => {
   saveSentNumbers(new Set());
-  res.json({ success: true, message: "Sent list cleared — all numbers will receive next run" });
+  res.json({ success: true, message: "Sent list cleared — will send to all numbers tomorrow" });
 });
 
 // ── AC STATUS REMINDER — every 2 hours ─────────────────────────

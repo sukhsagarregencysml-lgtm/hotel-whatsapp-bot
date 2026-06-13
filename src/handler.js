@@ -61,7 +61,7 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
   const t = (text || "").trim().toUpperCase();
   console.log(`MSG From ${from}: ${text || "[media]"}`);
 
-  // -- 10 MIN SUMMARY TRACKER — notify admin after inactivity ----------------
+  // -- 10 MIN SUMMARY TRACKER ─────────────────────────────────────────────
   if (from !== ADMIN_PHONE) {
     if (!global.enquiryTracker) global.enquiryTracker = {};
     const tracker = global.enquiryTracker;
@@ -69,39 +69,51 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
     // Clear existing timer
     if (tracker[from]?.timer) clearTimeout(tracker[from].timer);
 
-    // Store/update this message
+    // Init or update tracker
     if (!tracker[from]) {
-      tracker[from] = { firstMsg: text || "[media]", startTime: new Date(), booked: false, msgs: [] };
+      tracker[from] = {
+        firstMsg: text ? text.slice(0, 100) : "[media]",
+        startTime: Date.now(),
+        booked: false,
+        msgs: []
+      };
     }
-    if (text) tracker[from].msgs.push(text.slice(0, 50));
+    if (text) tracker[from].msgs.push(text.slice(0, 60));
     tracker[from].lastMsg = text || "[media]";
-    tracker[from].lastTime = new Date();
+    tracker[from].lastActivityTime = Date.now();
 
-    // Set 10 min timer
+    // Send summary after 10 min of silence
     tracker[from].timer = setTimeout(async () => {
       try {
-        const info = tracker[from];
+        const info = global.enquiryTracker?.[from];
         if (!info) return;
         const senderAgent = await getAgent(from);
         const senderName = senderAgent?.name || "Unknown";
-        const duration = Math.round((new Date() - info.startTime) / 60000);
+        const duration = Math.round((Date.now() - info.startTime) / 60000);
+        const msgLog = (info.msgs || []).slice(0, 3).join(" | ").slice(0, 120);
         const status = info.booked
-          ? `✅ *BOOKED* — Voucher: ${info.voucherNo || "Confirmed"}`
-          : `❌ *NOT BOOKED* — Enquiry only`;
-        const msgLog = info.msgs.slice(0, 3).join(" | ");
+          ? `✅ BOOKED — Voucher: ${info.voucherNo || "Confirmed"}`
+          : `❌ NOT BOOKED`;
 
-        // Use sendMessage (plain text) to ensure delivery
-        await sendMessage(ADMIN_PHONE,
-          `📊 *ENQUIRY SUMMARY (${duration} mins)*\n\n` +
-          `👤 ${senderName}\n` +
-          `📱 ${from}\n` +
-          `💬 ${msgLog}\n\n` +
-          `${status}`
-        );
-        // Reset session after 10 mins inactivity
+        const summary =
+          `📊 *ENQUIRY SUMMARY*\n` +
+          `👤 ${senderName} (${from})\n` +
+          `💬 ${msgLog}\n` +
+          `⏱ ${duration} min | ${status}`;
+
+        // Try plain text first, then template fallback
+        try {
+          await sendMessage(ADMIN_PHONE, summary);
+        } catch(e) {
+          await sendReminder(ADMIN_PHONE, summary);
+        }
+
+        delete global.enquiryTracker[from];
+        // Also reset session
         if (sessions[from]) sessions[from] = { step: "idle" };
-        delete tracker[from];
-      } catch(e) { console.error("Enquiry tracker error:", e.message); }
+      } catch(e) {
+        console.error("Enquiry tracker error:", e.message);
+      }
     }, 10 * 60 * 1000);
   }
 
@@ -408,31 +420,21 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
       `We are checking availability...`;
     await sendMessage(from, ackMsg);
 
-    // Ask for missing info step by step
+    // Ask for missing info
     if (!session.coDate) {
       session.step = "awaiting_checkout";
-      await sendMessage(from, `Dear *${agent.name}*,\n\nWhat is the *check-out date*?\n\nExample: *24 July*`);
-      return;
-    }
-
-    if (!session.rooms || session.rooms < 1) {
-      session.step = "awaiting_rooms";
-      await sendMessage(from,
-        `Dear *${agent.name}*,\n\nHow many rooms do you need?\n\n` +
-        `Reply with number and type:\n` +
-        `*1 deluxe* or *2 dlx* or *1 super* or *1 honey*`
-      );
+      await sendMessage(from, `Could you please share the *check-out date*?\n\nExample: *12 July*`);
       return;
     }
 
     if (!session.plan) {
       session.step = "awaiting_plan";
       await sendMessage(from,
-        `Dear *${agent.name}*,\n\nWhich meal plan?\n\n` +
-        `*CP* — Breakfast only\n` +
-        `*MAP* — Breakfast + Dinner\n` +
-        `*MAPAI* — Breakfast + Dinner (GST incl.)\n` +
-        `*EP* — Room only`
+        `Could you please share the *meal plan*?\n\nReply with:\n` +
+        `*CP* - Continental Plan (with breakfast)\n` +
+        `*MAP* - Modified American Plan (breakfast + dinner)\n` +
+        `*MAPAI* - MAP with GST included\n` +
+        `*EP* - European Plan (room only)`
       );
       return;
     }
@@ -443,33 +445,6 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
 
   // -- HANDLE PARTIAL MESSAGES (multi-message support) --------------------
   // If session has some data already, try to fill in missing pieces
-  // Step: awaiting rooms count/type
-  if (session.step === "awaiting_rooms") {
-    const roomParsed = parseEnquiry(text + " 22july 24july");
-    if (roomParsed?.rooms || /\d+/.test(text)) {
-      session.rooms = roomParsed?.rooms || parseInt(text.match(/\d+/)?.[0]) || 1;
-      session.roomType = roomParsed?.roomType || session.roomType || "deluxe";
-      session.roomTypes = roomParsed?.roomTypes || null;
-      // Now ask for plan
-      if (!session.plan) {
-        session.step = "awaiting_plan";
-        await sendMessage(from,
-          `Dear *${agent.name}*,\n\nWhich meal plan?\n\n` +
-          `*CP* — Breakfast only\n` +
-          `*MAP* — Breakfast + Dinner\n` +
-          `*MAPAI* — Breakfast + Dinner (GST incl.)\n` +
-          `*EP* — Room only`
-        );
-      } else {
-        session.step = "idle";
-        await checkAndRespond(from, agent, session);
-      }
-    } else {
-      await sendMessage(from, `Please reply with rooms and type, e.g. *2 deluxe* or *1 honeymoon*`);
-    }
-    return;
-  }
-
   if (session.ciDate && !session.coDate) {
     const parsed = parseEnquiry("dlx " + text);
     if (parsed?.ciDate) {
