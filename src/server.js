@@ -107,7 +107,7 @@ app.post("/send-service-menu", async (req, res) => {
     await sendTemplate(phone, "guest_services_menu", [guestName || "Guest"]);
     // Send portal link as follow-up
     if (reservationId) {
-      const portalLink = `https://api.optisetup.in/dashboard/guest-portal.html?rid=${reservationId}`;
+      const portalLink = `https://api.optisetup.in/portal/${reservationId}`;
       await sendMessage(phone, `🏨 Order food, request housekeeping & more:\n${portalLink}`, { skipSync: true });
     }
     res.json({ success: true, message: "Service menu sent to " + phone });
