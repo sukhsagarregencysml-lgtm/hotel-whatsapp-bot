@@ -84,6 +84,20 @@ app.post("/send-optin", async (req, res) => {
   }
 });
 
+// -- POST /send-precheckin -- called by PMS after booking to send portal link --
+app.post("/send-precheckin", async (req, res) => {
+  try {
+    const { phone, guestName, hotelName, checkinDate, checkinLink } = req.body;
+    if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName required" });
+    const { sendTemplate } = require("./whatsapp");
+    // Use booking_confirmation template: guestName, hotelName, checkinDate, portalLink
+    await sendTemplate(phone, "booking_confirmation", [guestName, hotelName, checkinDate || "As per booking", checkinLink || "https://api.optisetup.in/guest-portal.html"]);
+    res.json({ success: true, message: "Pre check-in link sent to " + phone });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // -- POST /send-checkin -- called by PMS on check-in ---------------
 app.post("/send-checkin", async (req, res) => {
   try {
