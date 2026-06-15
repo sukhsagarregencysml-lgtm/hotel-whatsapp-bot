@@ -55,9 +55,9 @@ app.get("/", (req, res) => res.json({ status: "Hotel bot running ✓" }));
 // -- POST /send-optin -- called by PMS when booking is created ----
 app.post("/send-optin", async (req, res) => {
   try {
-    const { 
+    const {
       phone, guestName, hotelName, reservationId,
-      room, checkout, plan, wifi 
+      room, checkout, plan, wifi
     } = req.body;
 
     if (!phone || !guestName || !hotelName) {
@@ -65,7 +65,7 @@ app.post("/send-optin", async (req, res) => {
     }
 
     const { pendingOptIns } = require("./handler");
-    const { sendMessage } = require("./whatsapp");
+    const { sendTemplate } = require("./whatsapp");
 
     pendingOptIns[phone] = {
       guestName, hotelName, reservationId,
@@ -76,14 +76,8 @@ app.post("/send-optin", async (req, res) => {
       timestamp: Date.now()
     };
 
-    const msg = 
-      `Dear ${guestName},\n\n` +
-      `Your booking at ${hotelName} is confirmed!\n\n` +
-      `Reply *YES* to receive your check-in details and updates on WhatsApp.\n\n` +
-      `Team ${hotelName}`;
-
-    await sendMessage(phone, msg);
-    res.json({ success: true, message: "Opt-in request sent to " + phone });
+    await sendTemplate(phone, "booking_confirmation", [guestName, hotelName, checkout || "As per booking", reservationId || "—"]);
+    res.json({ success: true, message: "Booking confirmation sent to " + phone });
   } catch (err) {
     console.error("Opt-in error:", err.message);
     res.status(500).json({ error: err.message });
