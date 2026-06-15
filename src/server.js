@@ -98,6 +98,19 @@ app.post("/send-precheckin", async (req, res) => {
   }
 });
 
+// -- POST /send-service-menu -- sent 45s after check-in with guest portal link --
+app.post("/send-service-menu", async (req, res) => {
+  try {
+    const { phone, guestName, reservationId } = req.body;
+    if (!phone) return res.status(400).json({ error: "phone required" });
+    const { sendTemplate } = require("./whatsapp");
+    await sendTemplate(phone, "guest_services_menu", [guestName || "Guest"]);
+    res.json({ success: true, message: "Service menu sent to " + phone });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // -- POST /send-checkin -- called by PMS on check-in ---------------
 app.post("/send-checkin", async (req, res) => {
   try {
