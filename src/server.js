@@ -94,21 +94,9 @@ app.post("/send-optin", async (req, res) => {
 app.post("/send-checkin", async (req, res) => {
   try {
     const { phone, guestName, hotelName, room, checkout, plan, wifi } = req.body;
-    const { sendMessage } = require("./whatsapp");
+    const { sendHotelCheckin } = require("./whatsapp");
 
-    const msg =
-      `Welcome to ${hotelName}! 🏨\n\n` +
-      `Dear ${guestName},\n\n` +
-      `You are now checked in. Here are your details:\n\n` +
-      `Room: ${room}\n` +
-      `Check-out: ${checkout}\n` +
-      `Plan: ${plan}\n` +
-      `WiFi: ${wifi}\n\n` +
-      `For assistance please call reception.\n\n` +
-      `We wish you a wonderful stay!\n` +
-      `Team ${hotelName}`;
-
-    await sendMessage(phone, msg);
+    await sendHotelCheckin(phone, { hotelName, guestName, room, checkout, plan, wifi });
     res.json({ success: true, message: "Check-in message sent to " + phone });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -119,19 +107,9 @@ app.post("/send-checkin", async (req, res) => {
 app.post("/send-checkout", async (req, res) => {
   try {
     const { phone, guestName, hotelName, roomCharges, gst, total, reviewLink } = req.body;
-    const { sendMessage } = require("./whatsapp");
+    const { sendHotelCheckout } = require("./whatsapp");
 
-    const msg =
-      `Dear ${guestName},\n\n` +
-      `Thank you for staying at ${hotelName}! 🙏\n\n` +
-      `Your bill summary:\n` +
-      `Room charges: Rs.${roomCharges}\n` +
-      `GST: Rs.${gst}\n` +
-      `Total: Rs.${total}\n\n` +
-      `We hope to see you again!\n\n` +
-      (reviewLink ? `Please share your experience:\n${reviewLink}` : "");
-
-    await sendMessage(phone, msg);
+    await sendHotelCheckout(phone, { guestName, hotelName, roomType: "Room", roomCharges, extraCharges: 0, gst, total, reviewLink });
     res.json({ success: true, message: "Checkout message sent to " + phone });
   } catch (err) {
     res.status(500).json({ error: err.message });
