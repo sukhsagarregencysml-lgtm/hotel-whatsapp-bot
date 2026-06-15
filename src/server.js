@@ -101,10 +101,15 @@ app.post("/send-precheckin", async (req, res) => {
 // -- POST /send-service-menu -- sent 45s after check-in with guest portal link --
 app.post("/send-service-menu", async (req, res) => {
   try {
-    const { phone, guestName, reservationId } = req.body;
+    const { phone, guestName, hotelName, reservationId } = req.body;
     if (!phone) return res.status(400).json({ error: "phone required" });
-    const { sendTemplate } = require("./whatsapp");
+    const { sendTemplate, sendMessage } = require("./whatsapp");
     await sendTemplate(phone, "guest_services_menu", [guestName || "Guest"]);
+    // Send portal link as follow-up
+    if (reservationId) {
+      const portalLink = `https://api.optisetup.in/checkin/${reservationId}`;
+      await sendMessage(phone, `🔗 Access your guest services here:\n${portalLink}`, { skipSync: true });
+    }
     res.json({ success: true, message: "Service menu sent to " + phone });
   } catch (err) {
     res.status(500).json({ error: err.message });
