@@ -32,18 +32,30 @@ app.post("/webhook", async (req, res) => {
 
     let text = "";
     let mediaId = null;
+    let buttonId = null;
 
     if (msgType === "text") {
       text = msg.text?.body || "";
     } else if (msgType === "image") {
       mediaId = msg.image?.id || null;
       text = msg.image?.caption || "";
+    } else if (msgType === "interactive") {
+      const interactive = msg.interactive;
+      if (interactive?.type === "button_reply") {
+        buttonId = interactive.button_reply?.id || null;
+        text = interactive.button_reply?.title || "";
+      } else if (interactive?.type === "list_reply") {
+        buttonId = interactive.list_reply?.id || null;
+        text = interactive.list_reply?.title || "";
+      } else {
+        return;
+      }
     } else {
       return; // ignore other types
     }
 
-    console.log(`📨 From ${from} [${msgType}]: ${text}`);
-    await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId });
+    console.log(`📨 From ${from} [${msgType}]: ${text}${buttonId ? ` (button: ${buttonId})` : ""}`);
+    await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId, buttonId });
   } catch (err) {
     console.error("Webhook error:", err.message);
   }
@@ -103,12 +115,12 @@ app.post("/send-service-menu", async (req, res) => {
   try {
     const { phone, guestName, hotelName, reservationId } = req.body;
     if (!phone) return res.status(400).json({ error: "phone required" });
-    const { sendTemplate, sendMessage } = require("./whatsapp");
+    const { sendTemplate } = require("./whatsapp");
     await sendTemplate(phone, "guest_services_menu", [guestName || "Guest"]);
-    // Send portal link as follow-up
+    // Send portal link via template (plain text won't deliver without 24h window)
     if (reservationId) {
       const portalLink = `https://api.optisetup.in/portal/${reservationId}`;
-      await sendMessage(phone, `🏨 Order food, request housekeeping & more:\n${portalLink}`, { skipSync: true });
+      await sendTemplate(phone, "booking_confirmation", [guestName || "Guest", hotelName || "Hotel", "your stay", portalLink]);
     }
     res.json({ success: true, message: "Service menu sent to " + phone });
   } catch (err) {
@@ -132,13 +144,160 @@ app.post("/send-checkin", async (req, res) => {
 // -- POST /send-checkout -- called by PMS on checkout ---------------
 app.post("/send-checkout", async (req, res) => {
   try {
-    const { phone, guestName, hotelName, roomCharges, gst, total, reviewLink } = req.body;
+    const { phone, guestName, hotelName, bookingId, checkinDate, checkoutDate, roomType, roomsCount, plan, total } = req.body;
     const { sendHotelCheckout } = require("./whatsapp");
 
-    await sendHotelCheckout(phone, { guestName, hotelName, roomType: "Room", roomCharges, extraCharges: 0, gst, total, reviewLink });
+    await sendHotelCheckout(phone, { guestName, hotelName, bookingId, checkinDate, checkoutDate, roomType, roomsCount, plan, total });
     res.json({ success: true, message: "Checkout message sent to " + phone });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// -- POST /send-review-request -- called by PMS after checkout to ask for a rating --
+app.post("/send-review-request", async (req, res) => {
+  try {
+    const { phone, guestName, hotelName, room, reviewLink, adminPhone } = req.body;
+    if (!phone || !guestName) return res.status(400).json({ error: "phone and guestName required" });
+    const { sendRatingButtons } = require("./whatsapp");
+    const { pendingReviews } = require("./handler");
+
+    pendingReviews[phone] = {
+      guestName, hotelName: hotelName || "our hotel", room,
+      reviewLink, adminPhone, awaitingIssue: false, timestamp: Date.now()
+    };
+
+    await sendRatingButtons(phone, guestName);
+    res.json({ success: true, message: "Review request sent to " + phone });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -- POST /send-restaurant-bill -- called by PMS on checkout if guest ordered food --
+app.post("/send-restaurant-bill", async (req, res) => {
+  try {
+    const { phone, guestName, room, hotelName, items, total, billNo } = req.body;
+    if (!phone || !items || !items.length) return res.status(400).json({ error: "phone and items required" });
+
+    const { generateRestaurantBill } = require("./generate-restaurant-bill");
+    const axios = require("axios");
+    const fs = require("fs");
+    const FormData = require("form-data");
+
+    const bill = billNo || "ZB" + Date.now().toString().slice(-8);
+    const date = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+
+    console.log(`[ZAIKA BILL] Generating PDF for ${phone} | Items: ${items.length} | Total: ${total}`);
+    const pdfPath = await generateRestaurantBill({
+      billNo: bill, date, guestName: guestName || "Guest", room: room || "-",
+      hotelName, items, total
+    });
+    console.log(`[ZAIKA BILL] PDF generated at ${pdfPath}`);
+
+    const PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID;
+    const ACCESS_TOKEN = process.env.WA_ACCESS_TOKEN;
+    if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) {
+      console.log(`[MOCK RESTAURANT BILL] To: ${phone} | Bill: ${bill} | Total: ${total}`);
+      return res.json({ success: true, message: "Mock restaurant bill (no WA credentials)" });
+    }
+
+    // Upload PDF to WhatsApp media
+    const uploadForm = new FormData();
+    uploadForm.append("messaging_product", "whatsapp");
+    uploadForm.append("type", "application/pdf");
+    uploadForm.append("file", fs.createReadStream(pdfPath), {
+      contentType: "application/pdf",
+      filename: `Zaika-Bill-${bill}.pdf`,
+      knownLength: fs.statSync(pdfPath).size
+    });
+
+    console.log(`[ZAIKA BILL] Uploading PDF to WhatsApp media API...`);
+    let uploadRes;
+    try {
+      uploadRes = await axios.post(
+        `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/media`,
+        uploadForm,
+        {
+          headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, ...uploadForm.getHeaders() },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity
+        }
+      );
+    } catch (uploadErr) {
+      const detail = JSON.stringify(uploadErr.response?.data || uploadErr.message);
+      console.error(`[ZAIKA BILL] Media upload failed:`, detail);
+      return res.status(500).json({ error: "Media upload failed", detail });
+    }
+
+    const mediaId = uploadRes.data?.id;
+    if (!mediaId) {
+      console.error(`[ZAIKA BILL] No media id in upload response:`, JSON.stringify(uploadRes.data));
+      return res.status(500).json({ error: "Media upload failed — no media id returned", detail: uploadRes.data });
+    }
+    console.log(`[ZAIKA BILL] Media uploaded, id: ${mediaId}`);
+
+    const toNum = phone.replace(/^\+/, "");
+
+    // Step 1: Send the approved template (body-only, no header) — this works outside 24h window
+    let tplRes;
+    try {
+      tplRes = await axios.post(
+        `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`,
+        {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: toNum,
+          type: "template",
+          template: {
+            name: "zaika_bill_ready",
+            language: { code: "en" },
+            components: [
+              { type: "body", parameters: [
+                { type: "text", text: String(guestName || "Guest") },
+                { type: "text", text: String(room || "-") },
+                { type: "text", text: Number(total || 0).toLocaleString("en-IN") }
+              ] }
+            ]
+          }
+        },
+        { headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, "Content-Type": "application/json" } }
+      );
+    } catch (tplErr) {
+      const detail = JSON.stringify(tplErr.response?.data || tplErr.message);
+      console.error(`[ZAIKA BILL] Template send failed:`, detail);
+      return res.status(500).json({ error: "Template send failed", detail });
+    }
+    console.log(`[ZAIKA BILL] Template sent to ${toNum}:`, tplRes.data?.messages?.[0]?.id);
+
+    // Step 2: Send the PDF as a document message immediately after (opens a session window via template reply)
+    try {
+      const docRes = await axios.post(
+        `https://graph.facebook.com/v25.0/${PHONE_NUMBER_ID}/messages`,
+        {
+          messaging_product: "whatsapp",
+          recipient_type: "individual",
+          to: toNum,
+          type: "document",
+          document: {
+            id: mediaId,
+            filename: `Zaika-Bill-${bill}.pdf`,
+            caption: "Zaika Restaurant — Food Bill"
+          }
+        },
+        { headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, "Content-Type": "application/json" } }
+      );
+      console.log(`[ZAIKA BILL] PDF document sent to ${toNum}:`, docRes.data?.messages?.[0]?.id);
+    } catch (docErr) {
+      // Non-fatal — template already sent; document may fail if outside 24h window
+      console.error(`[ZAIKA BILL] PDF document send failed (non-fatal):`, JSON.stringify(docErr.response?.data || docErr.message));
+    }
+
+    console.log(`✓ Restaurant bill sent to ${phone}`);
+    res.json({ success: true, message: "Restaurant bill sent to " + phone, messageId: tplRes.data?.messages?.[0]?.id });
+  } catch (err) {
+    console.error("Restaurant bill error:", err.response?.data || err.message);
+    res.status(500).json({ error: err.message, detail: err.response?.data });
   }
 });
 
@@ -298,22 +457,39 @@ cron.schedule("*/10 * * * *", async () => {
 }, { timezone: "Asia/Kolkata" });
 console.log("📣 Daily marketing SMS scheduled at 10:00 AM IST");
 
-// Manual trigger endpoint
-app.post("/send-marketing", async (req, res) => {
-  res.json({ success: true, message: "Marketing SMS started" });
-  await sendMarketingSMS();
+const ADMIN_SECRET = process.env.ADMIN_SECRET || "hotelease2026";
+function checkAdmin(req, res) {
+  const key = req.headers["x-admin-key"] || req.query.key;
+  if (key !== ADMIN_SECRET) { res.status(403).json({ error: "Unauthorized" }); return false; }
+  return true;
+}
+
+// GET — trigger from browser
+app.get("/send-marketing-now", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  res.json({ success: true, message: "Marketing SMS started — check Render logs" });
+  sendMarketingSMS();
 });
 
-// Check status endpoint
+// POST trigger
+app.post("/send-marketing", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  res.json({ success: true, message: "Marketing SMS started" });
+  sendMarketingSMS();
+});
+
+// GET status
 app.get("/marketing-status", (req, res) => {
+  if (!checkAdmin(req, res)) return;
   const sent = loadSentNumbers();
   res.json({ totalSent: sent.size, numbers: [...sent] });
 });
 
-// Reset sent list (if you want to resend to everyone)
-app.post("/marketing-reset", (req, res) => {
+// GET reset
+app.get("/marketing-reset", (req, res) => {
+  if (!checkAdmin(req, res)) return;
   saveSentNumbers(new Set());
-  res.json({ success: true, message: "Sent list cleared — will send to all numbers tomorrow" });
+  res.json({ success: true, message: "Sent list cleared" });
 });
 
 // ── AC STATUS REMINDER — every 2 hours ─────────────────────────
