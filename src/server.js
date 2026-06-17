@@ -347,6 +347,10 @@ async function fetchAgentNumbers() {
   }
 }
 
+const DAILY_LIMIT = 55; // Max messages per day
+const COST_PER_MSG = 0.58; // Rs per message (approx)
+const ADMIN_PHONE = process.env.ADMIN_PHONE || "919816003322";
+
 async function sendMarketingSMS() {
   console.log("📣 Starting daily marketing SMS...");
   const allNumbers = await fetchAgentNumbers();
@@ -366,11 +370,15 @@ async function sendMarketingSMS() {
     return;
   }
 
+  // Limit to 55 per day
+  const toSend = newNumbers.slice(0, DAILY_LIMIT);
+  const remaining = newNumbers.length - toSend.length;
+
   const phoneId = process.env.WA_PHONE_NUMBER_ID;
   const token = process.env.WA_ACCESS_TOKEN;
   let sent = 0, failed = 0;
 
-  for (const number of newNumbers) {
+  for (const number of toSend) {
     try {
       await axios.post(
         `https://graph.facebook.com/v25.0/${phoneId}/messages`,
@@ -404,10 +412,10 @@ async function sendMarketingSMS() {
           }
         }
       );
-      sentNumbers.add(number); // Mark as sent
+      sentNumbers.add(number);
       sent++;
-      console.log(`✓ Marketing SMS sent to ${number} (${sent}/${newNumbers.length})`);
-      await new Promise(r => setTimeout(r, 500)); // avoid rate limiting
+      console.log(`✓ Marketing SMS sent to ${number} (${sent}/${toSend.length})`);
+      await new Promise(r => setTimeout(r, 500));
     } catch (err) {
       failed++;
       console.error(`✗ Failed to send to ${number}:`, err.response?.data?.error?.message || err.message);
@@ -416,7 +424,25 @@ async function sendMarketingSMS() {
 
   // Save updated sent list
   saveSentNumbers(sentNumbers);
-  console.log(`📣 Done: ${sent} sent, ${failed} failed. Total ever sent: ${sentNumbers.size}`);
+
+  // Calculate cost
+  const totalCost = (sent * COST_PER_MSG).toFixed(2);
+
+  // Notify admin
+  try {
+    const { sendMessage } = require("./whatsapp");
+    await sendMessage(ADMIN_PHONE,
+      `📣 *DAILY MARKETING REPORT*\n\n` +
+      `✅ Sent: ${sent}\n` +
+      `❌ Failed: ${failed}\n` +
+      `📋 Remaining unsent: ${remaining + failed}\n` +
+      `💰 Approx cost: Rs.${totalCost}\n` +
+      `📊 Total ever sent: ${sentNumbers.size}\n\n` +
+      `Daily limit: ${DAILY_LIMIT} messages/day`
+    );
+  } catch(e) { console.error("Admin notify error:", e.message); }
+
+  console.log(`📣 Done: ${sent} sent, ${failed} failed. Cost: Rs.${totalCost}. Total ever: ${sentNumbers.size}`);
 }
 
 // Run at 10:00 AM IST (04:30 UTC) every day
@@ -457,39 +483,22 @@ cron.schedule("*/10 * * * *", async () => {
 }, { timezone: "Asia/Kolkata" });
 console.log("📣 Daily marketing SMS scheduled at 10:00 AM IST");
 
-const ADMIN_SECRET = process.env.ADMIN_SECRET || "hotelease2026";
-function checkAdmin(req, res) {
-  const key = req.headers["x-admin-key"] || req.query.key;
-  if (key !== ADMIN_SECRET) { res.status(403).json({ error: "Unauthorized" }); return false; }
-  return true;
-}
-
-// GET — trigger from browser
-app.get("/send-marketing-now", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  res.json({ success: true, message: "Marketing SMS started — check Render logs" });
-  sendMarketingSMS();
-});
-
-// POST trigger
+// Manual trigger endpoint
 app.post("/send-marketing", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
   res.json({ success: true, message: "Marketing SMS started" });
-  sendMarketingSMS();
+  await sendMarketingSMS();
 });
 
-// GET status
+// Check status endpoint
 app.get("/marketing-status", (req, res) => {
-  if (!checkAdmin(req, res)) return;
   const sent = loadSentNumbers();
   res.json({ totalSent: sent.size, numbers: [...sent] });
 });
 
-// GET reset
-app.get("/marketing-reset", (req, res) => {
-  if (!checkAdmin(req, res)) return;
+// Reset sent list (if you want to resend to everyone)
+app.post("/marketing-reset", (req, res) => {
   saveSentNumbers(new Set());
-  res.json({ success: true, message: "Sent list cleared" });
+  res.json({ success: true, message: "Sent list cleared — will send to all numbers tomorrow" });
 });
 
 // ── AC STATUS REMINDER — every 2 hours ─────────────────────────
