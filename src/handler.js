@@ -17,6 +17,7 @@ const pendingOptIns = {};
 const optedInGuests = {};
 const guestSessions = {};
 const pendingPayments = {}; // phone -> { agentName, amount, total, remaining, voucherNo, ciDate, coDate }
+const pendingReviews = {}; // phone -> { guestName, hotelName, room, reviewLink, adminPhone, awaitingIssue }
 
 // Hotel info - customize per hotel
 const HOTEL_INFO = {
@@ -139,6 +140,56 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
         `To approve: *APPROVE PAY ${from} ${pending.amount}*\n` +
         `To reject: *REJECT PAY ${from}*`
       );
+      return;
+    }
+  }
+
+  // -- POST-STAY REVIEW HANDLER ---------------------------------------------
+  if (pendingReviews[from]) {
+    const review = pendingReviews[from];
+    // Match by our own button id if Meta preserved it, else fall back to matching the button's visible text
+    const replyText = (text || "").toLowerCase();
+    const isHigh = buttonId === "rating_5" || buttonId === "rating_4" ||
+      replyText.includes("excellent") || replyText.includes("good") ||
+      (replyText.match(/⭐/g) || []).length >= 4;
+    const isLow = buttonId === "rating_low" ||
+      replyText.includes("average") ||
+      ((replyText.match(/⭐/g) || []).length > 0 && (replyText.match(/⭐/g) || []).length <= 3);
+
+    if (msgType === "interactive" && isHigh) {
+      await sendMessage(from,
+        `🙏 Thank you, ${review.guestName}! We're thrilled you enjoyed your stay.\n\n` +
+        (review.reviewLink
+          ? `Would you mind sharing your experience on Google? It really helps us:\n${review.reviewLink}`
+          : `We hope to host you again soon!`)
+      );
+      delete pendingReviews[from];
+      return;
+    }
+    if (msgType === "interactive" && isLow) {
+      review.awaitingIssue = true;
+      await sendMessage(from,
+        `😔 We're sorry your stay wasn't great, ${review.guestName}.\n\nCould you please tell us what went wrong? Your feedback helps us improve.`
+      );
+      return;
+    }
+    if (review.awaitingIssue && text) {
+      review.awaitingIssue = false;
+      const adminPhone = review.adminPhone || ADMIN_PHONE;
+      try {
+        await sendMessage(adminPhone,
+          `⚠️ *NEGATIVE GUEST FEEDBACK*\n\n` +
+          `Hotel: ${review.hotelName}\n` +
+          `Guest: ${review.guestName} (${from})\n` +
+          `Room: ${review.room || "-"}\n\n` +
+          `*Issue:* ${text}\n\n` +
+          `Please follow up with the guest.`
+        );
+      } catch (e) { console.error("Review admin notify error:", e.message); }
+      await sendMessage(from,
+        `Thank you for letting us know. Our team will reach out to address this. We're sorry for the inconvenience. 🙏`
+      );
+      delete pendingReviews[from];
       return;
     }
   }
@@ -1947,4 +1998,4 @@ async function safeHandleIncoming(args) {
   }
 }
 
-module.exports = { handleIncoming: safeHandleIncoming, pendingOptIns, optedInGuests, pendingPayments };
+module.exports = { handleIncoming: safeHandleIncoming, pendingOptIns, optedInGuests, pendingPayments, pendingReviews };
