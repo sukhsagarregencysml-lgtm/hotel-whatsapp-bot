@@ -441,16 +441,6 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
   const enquiry = parseEnquiry(text);
 
   if (enquiry) {
-    // Reject past dates
-    if (enquiry.isPastDate) {
-      await sendMessage(from,
-        `❌ *These dates have already passed!*\n\n` +
-        `Please send upcoming dates.\n\n` +
-        `Example: *2 deluxe CP 22 July 24 July*`
-      );
-      return;
-    }
-
     // Save parsed data to session
     session.ciDate = enquiry.ciDate;
     session.coDate = enquiry.coDate;
@@ -616,6 +606,20 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
 
 async function checkAndRespond(from, agent, session) {
   try {
+    // ── Reject past dates immediately ──────────────────────────
+    const todayCheck = new Date(); todayCheck.setHours(0,0,0,0);
+    if (session.ciDate && new Date(session.ciDate) < todayCheck) {
+      session.step = "idle";
+      session.ciDate = null; session.coDate = null;
+      await sendMessage(from,
+        `Dear *${agent.name}*,\n\n` +
+        `❌ *These dates have already passed!*\n\n` +
+        `Please send upcoming dates.\n\n` +
+        `Example: *2 deluxe CP 22 July 24 July*`
+      );
+      return;
+    }
+
     const nights = Math.round((new Date(session.coDate) - new Date(session.ciDate)) / 86400000);
     session.nights = nights;
 
