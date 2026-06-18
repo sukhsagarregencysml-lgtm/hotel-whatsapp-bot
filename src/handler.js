@@ -606,13 +606,13 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
 
 async function checkAndRespond(from, agent, session) {
   try {
-    // ── Reject past dates immediately ──────────────────────────
-    const todayCheck = new Date(); todayCheck.setHours(0,0,0,0);
-    if (session.ciDate && new Date(session.ciDate) < todayCheck) {
+    // ── PAST DATE CHECK — applies to ALL users (agents, guests, everyone) ──
+    const todayNow = new Date(); todayNow.setHours(0,0,0,0);
+    if (session.ciDate && new Date(session.ciDate) < todayNow) {
       session.step = "idle";
-      session.ciDate = null; session.coDate = null;
+      session.ciDate = null;
+      session.coDate = null;
       await sendMessage(from,
-        `Dear *${agent.name}*,\n\n` +
         `❌ *These dates have already passed!*\n\n` +
         `Please send upcoming dates.\n\n` +
         `Example: *2 deluxe CP 22 July 24 July*`
@@ -1502,6 +1502,14 @@ async function handleGuest(from, text, t, btnId = null) {
 
     // Show rate and ask for confirm
     if (session.step === "awaiting_confirm_customer") {
+      // Past date check for guest flow too
+      const todayGuest = new Date(); todayGuest.setHours(0,0,0,0);
+      if (session.ciDate && new Date(session.ciDate) < todayGuest) {
+        session.step = "idle";
+        session.ciDate = null; session.coDate = null;
+        await sendMessage(from, `❌ *These dates have already passed!*\n\nPlease send upcoming dates.`);
+        return;
+      }
       const { checkAvailability, saveReservation, cancelReservation } = require("./stayezee");
       const avail = await checkAvailability({ ciDate: session.ciDate, coDate: session.coDate, rooms: session.rooms });
 
