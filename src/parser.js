@@ -182,19 +182,12 @@ function parseEnquiry(text) {
     return null;
   }
 
-  // ── Fix past dates — push to next year ────────────────────────
+  // ── Reject past dates — set flag ────────────────────────────
   if (result.ciDate) {
     const today = new Date(); today.setHours(0,0,0,0);
     const ci = new Date(result.ciDate);
     if (ci < today) {
-      // Date is in the past — add 1 year
-      ci.setFullYear(ci.getFullYear() + 1);
-      result.ciDate = ci.toISOString().split("T")[0];
-      if (result.coDate) {
-        const co = new Date(result.coDate);
-        co.setFullYear(co.getFullYear() + 1);
-        result.coDate = co.toISOString().split("T")[0];
-      }
+      result.isPastDate = true;
     }
   }
 

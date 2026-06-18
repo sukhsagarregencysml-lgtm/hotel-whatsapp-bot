@@ -441,6 +441,16 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
   const enquiry = parseEnquiry(text);
 
   if (enquiry) {
+    // Reject past dates
+    if (enquiry.isPastDate) {
+      await sendMessage(from,
+        `❌ *These dates have already passed!*\n\n` +
+        `Please send upcoming dates.\n\n` +
+        `Example: *2 deluxe CP 22 July 24 July*`
+      );
+      return;
+    }
+
     // Save parsed data to session
     session.ciDate = enquiry.ciDate;
     session.coDate = enquiry.coDate;
