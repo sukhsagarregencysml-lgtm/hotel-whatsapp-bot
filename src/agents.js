@@ -4,6 +4,8 @@ const SHEET_ID = process.env.AGENTS_SHEET_ID || process.env.GOOGLE_SHEET_ID || "
 const API_KEY = process.env.GOOGLE_SHEETS_API_KEY || "AIzaSyCZbJjKgySFBC2hGvFvXkZTvnWZvwQz4pE";
 const SHEET_NAME = "Agents";
 
+// Sheet columns: A=Phone, B=Name, C=Category, D=Added On
+
 let agentsCache = null;
 let cacheTime = 0;
 const CACHE_TTL = 2 * 60 * 1000;
@@ -11,33 +13,35 @@ const CACHE_TTL = 2 * 60 * 1000;
 async function getAllAgents() {
   if (agentsCache && Date.now() - cacheTime < CACHE_TTL) return agentsCache;
   try {
-    // CSV export — no auth needed, sheet must be public
     const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${SHEET_NAME}&range=A:D`;
     const res = await axios.get(url, { timeout: 10000 });
-    const rows = res.data.split("\n").slice(1);
+    const rows = res.data.split("\n").slice(1); // skip header row
     const agents = rows
       .map(r => r.split(",").map(c => c.replace(/"/g,"").trim()))
       .filter(r => r[0] && r[0].replace(/\D/g,"").length >= 10)
       .map(r => ({
-        phone: r[0].replace(/\D/g,""),
-        name: r[1] || "Agent",
+        phone:    r[0].replace(/\D/g,""),
+        name:     r[1] || "Travel Agent",
         category: (r[2] || "C").toUpperCase(),
-        addedOn: r[3] || "",
+        addedOn:  r[3] || "",
       }));
-    agentsCache = agents;
+    const seen = new Set();
+    const unique = agents.filter(a => { if(seen.has(a.phone)) return false; seen.add(a.phone); return true; });
+    agentsCache = unique;
     cacheTime = Date.now();
-    console.log(`✓ Loaded ${agents.length} agents`);
-    return agents;
+    console.log(`✓ Loaded ${unique.length} agents from sheet`);
+    return unique;
   } catch(csvErr) {
+    console.error("CSV fetch failed:", csvErr.message);
     try {
       const url2 = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${SHEET_NAME}!A:D?key=${API_KEY}`;
       const res2 = await axios.get(url2, { timeout: 10000 });
       const rows = (res2.data?.values || []).slice(1);
       const agents = rows.filter(r => r[0]).map(r => ({
-        phone: r[0].toString().trim().replace(/\D/g,""),
-        name: r[1]?.toString().trim() || "Agent",
+        phone:    r[0].toString().trim().replace(/\D/g,""),
+        name:     r[1]?.toString().trim() || "Travel Agent",
         category: (r[2]?.toString().trim() || "C").toUpperCase(),
-        addedOn: r[3]?.toString().trim() || "",
+        addedOn:  r[3]?.toString().trim() || "",
       }));
       agentsCache = agents;
       cacheTime = Date.now();
@@ -66,7 +70,7 @@ async function addAgent(phone, name, category = "C") {
       return { success: false, message: `${phone} is already in the agent list` };
     }
     const newAgent = { phone: phone.replace(/\D/g,""), name, category: category.toUpperCase(), addedOn: new Date().toLocaleDateString("en-IN") };
-    if (!agentsCache) agentsCache = agents;
+    if (!agentsCache) agentsCache = [...agents];
     agentsCache.push(newAgent);
 
     if (process.env.GOOGLE_SERVICE_EMAIL && process.env.GOOGLE_SERVICE_KEY) {
@@ -83,6 +87,7 @@ async function addAgent(phone, name, category = "C") {
           valueInputOption: "RAW",
           requestBody: { values: [[phone, name, category.toUpperCase(), new Date().toLocaleDateString("en-IN")]] },
         });
+        console.log(`✓ Agent ${phone} written to sheet`);
       } catch(e) { console.log("Sheet write failed:", e.message); }
     }
     return { success: true, message: `✅ *${name}* (${phone}) added as Category ${category.toUpperCase()}` };
@@ -111,8 +116,8 @@ async function removeAgent(phone) {
 
 async function listAgents() {
   const agents = await getAllAgents();
-  if (!agents.length) return "📋 No agents found.\n\nAdd: ADD AGENT 919876543210 Name A";
-  return `📋 *Agents (${agents.length}):*\n\n${agents.map((a,i)=>`${i+1}. *${a.name}* — ${a.phone} — Cat ${a.category}`).join("\n")}`;
+  if (!agents.length) return "📋 No agents found.";
+  return `📋 *Agents (${agents.length}):*\n\n${agents.slice(0,20).map((a,i)=>`${i+1}. *${a.name}* — ${a.phone} — Cat ${a.category}`).join("\n")}`;
 }
 
 async function getTally(phone) { return { roomsBooked: 0, freeRoomsUsed: 0 }; }
