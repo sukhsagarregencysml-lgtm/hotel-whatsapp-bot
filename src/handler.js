@@ -532,79 +532,6 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
     return;
   }
 
-  // B2B / Agent rate card request
-  if (/b2b|b\s*to\s*b|agent.?rate|trade.?rate|tariff|rate.?card|rate.?list|send.*rate|your.*rate|hotel.*rate/i.test(t)) {
-    const { getSeason } = require("./rates");
-    const today = new Date().toISOString().split("T")[0];
-    const isPeak = getSeason(today) === "peak";
-    const disc = agent.category === "A" ? "10%" : agent.category === "B" ? "5%" : "Standard";
-    await sendMessage(from,
-      `Dear *${agent.name}*,
-
-` +
-      `As per your request, special *B2B rates* as under:
-
-` +
-      `🏨 *HOTEL SUKHSAGAR REGENCY, SHIMLA*
-` +
-      `━━━━━━━━━━━━━━━━━━━━━
-` +
-      `📅 *Season: ${isPeak ? "PEAK" : "OFF SEASON"}*
-
-` +
-      `*DELUXE ROOM*
-` +
-      `CP:  Rs.${isPeak ? "4,100" : "3,000"}/night
-` +
-      `MAP: Rs.${isPeak ? "4,900" : "3,600"}/night
-` +
-      `EP:  Rs.${isPeak ? "3,500" : "2,500"}/night
-
-` +
-      `*SUPER DELUXE ROOM*
-` +
-      `CP:  Rs.${isPeak ? "4,600" : "3,500"}/night
-` +
-      `MAP: Rs.${isPeak ? "5,400" : "4,100"}/night
-` +
-      `EP:  Rs.${isPeak ? "4,000" : "3,000"}/night
-
-` +
-      `*HONEYMOON SUITE*
-` +
-      `CP:  Rs.${isPeak ? "5,100" : "4,000"}/night
-` +
-      `MAP: Rs.${isPeak ? "5,900" : "4,600"}/night
-` +
-      `EP:  Rs.${isPeak ? "4,500" : "3,500"}/night
-
-` +
-      `━━━━━━━━━━━━━━━━━━━━━
-` +
-      `*Your Category:* ${agent.category || "C"} — *${disc} discount*
-
-` +
-      `*Extra Bed:*
-` +
-      `CWB (above 10 yrs): Rs.800/night
-` +
-      `CNB (6-10 yrs): Rs.500/night
-` +
-      `Child under 5 yrs: Complimentary
-
-` +
-      `━━━━━━━━━━━━━━━━━━━━━
-` +
-      `✅ All rates are GST inclusive.
-` +
-      `To check availability reply with dates + room type.
-
-` +
-      `📞 +91 98160 03322`
-    );
-    return;
-  }
-
   // Agent selected menu option
   if ((t === "1" || t === "MENU" || t === "0" || t === "HOME") && session.step !== "awaiting_confirm") {
     await sendAgentMenu(from, agent.name);
@@ -679,6 +606,13 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
 
 async function checkAndRespond(from, agent, session) {
   try {
+    // Block past dates for everyone
+    const todayNow = new Date(); todayNow.setHours(0,0,0,0);
+    if (session.ciDate && new Date(session.ciDate) < todayNow) {
+      session.step = "idle"; session.ciDate = null; session.coDate = null;
+      await sendMessage(from, `❌ *These dates have already passed!*\n\nPlease send upcoming dates.\n\nExample: *2 deluxe CP 22 July 24 July*`);
+      return;
+    }
     const nights = Math.round((new Date(session.coDate) - new Date(session.ciDate)) / 86400000);
     session.nights = nights;
 
