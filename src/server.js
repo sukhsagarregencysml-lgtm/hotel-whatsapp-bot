@@ -332,24 +332,37 @@ function saveSentNumbers(sentSet) {
 
 async function fetchAgentNumbers() {
   try {
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/leads!E:E?key=${SHEETS_API_KEY}`;
-    const res = await axios.get(url, { timeout: 10000 });
-    const rows = res.data?.values || [];
+    // Use public CSV export — no OAuth needed, just make sheet public
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=leads&range=E:E`;
+    const res = await axios.get(csvUrl, { timeout: 15000 });
+    const rows = res.data.split("\n");
     const numbers = rows
-      .flat()
+      .map(r => r.replace(/"/g, "").trim())
       .map(n => String(n).replace(/\D/g, ""))
       .filter(n => n.length >= 10 && n.length <= 13)
       .map(n => n.startsWith("91") ? n : "91" + n.slice(-10));
-    return [...new Set(numbers)];
+    const unique = [...new Set(numbers)];
+    console.log(`📋 Fetched ${unique.length} numbers from sheet`);
+    return unique;
   } catch (err) {
     console.error("Google Sheets fetch error:", err.message);
-    return [];
+    // Fallback to API key method
+    try {
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/leads!E:E?key=${SHEETS_API_KEY}`;
+      const res2 = await axios.get(url, { timeout: 10000 });
+      const rows = res2.data?.values || [];
+      const numbers = rows
+        .flat()
+        .map(n => String(n).replace(/\D/g, ""))
+        .filter(n => n.length >= 10 && n.length <= 13)
+        .map(n => n.startsWith("91") ? n : "91" + n.slice(-10));
+      return [...new Set(numbers)];
+    } catch(err2) {
+      console.error("Fallback fetch also failed:", err2.message);
+      return [];
+    }
   }
 }
-
-const DAILY_LIMIT = 55; // Max messages per day
-const COST_PER_MSG = 0.58; // Rs per message (approx)
-const ADMIN_PHONE = process.env.ADMIN_PHONE || "919816003322";
 
 async function sendMarketingSMS() {
   console.log("📣 Starting daily marketing SMS...");
@@ -370,15 +383,11 @@ async function sendMarketingSMS() {
     return;
   }
 
-  // Limit to 55 per day
-  const toSend = newNumbers.slice(0, DAILY_LIMIT);
-  const remaining = newNumbers.length - toSend.length;
-
   const phoneId = process.env.WA_PHONE_NUMBER_ID;
   const token = process.env.WA_ACCESS_TOKEN;
   let sent = 0, failed = 0;
 
-  for (const number of toSend) {
+  for (const number of newNumbers) {
     try {
       await axios.post(
         `https://graph.facebook.com/v25.0/${phoneId}/messages`,
@@ -412,10 +421,23 @@ async function sendMarketingSMS() {
           }
         }
       );
-      sentNumbers.add(number);
+      sentNumbers.add(number); // Mark as sent
       sent++;
-      console.log(`✓ Marketing SMS sent to ${number} (${sent}/${toSend.length})`);
-      await new Promise(r => setTimeout(r, 500));
+      console.log(`✓ Marketing SMS sent to ${number} (${sent}/${newNumbers.length})`);
+
+      // Auto-add to agents list as "Marketing Lead" category C
+      try {
+        const agentsModule = require("./agents");
+        if (agentsModule.getAgent && agentsModule.addAgent) {
+          const existing = await agentsModule.getAgent(number);
+          if (!existing) {
+            await agentsModule.addAgent(number, "Marketing Lead", "C");
+            console.log(`📋 Added ${number} to agent list`);
+          }
+        }
+      } catch(agentErr) { /* silent */ }
+
+      await new Promise(r => setTimeout(r, 500)); // avoid rate limiting
     } catch (err) {
       failed++;
       console.error(`✗ Failed to send to ${number}:`, err.response?.data?.error?.message || err.message);
@@ -424,25 +446,7 @@ async function sendMarketingSMS() {
 
   // Save updated sent list
   saveSentNumbers(sentNumbers);
-
-  // Calculate cost
-  const totalCost = (sent * COST_PER_MSG).toFixed(2);
-
-  // Notify admin
-  try {
-    const { sendMessage } = require("./whatsapp");
-    await sendMessage(ADMIN_PHONE,
-      `📣 *DAILY MARKETING REPORT*\n\n` +
-      `✅ Sent: ${sent}\n` +
-      `❌ Failed: ${failed}\n` +
-      `📋 Remaining unsent: ${remaining + failed}\n` +
-      `💰 Approx cost: Rs.${totalCost}\n` +
-      `📊 Total ever sent: ${sentNumbers.size}\n\n` +
-      `Daily limit: ${DAILY_LIMIT} messages/day`
-    );
-  } catch(e) { console.error("Admin notify error:", e.message); }
-
-  console.log(`📣 Done: ${sent} sent, ${failed} failed. Cost: Rs.${totalCost}. Total ever: ${sentNumbers.size}`);
+  console.log(`📣 Done: ${sent} sent, ${failed} failed. Total ever sent: ${sentNumbers.size}`);
 }
 
 // Run at 10:00 AM IST (04:30 UTC) every day
