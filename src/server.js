@@ -64,6 +64,19 @@ app.post("/webhook", async (req, res) => {
 // ── Health check ───────────────────────────────────────────────────────────
 app.get("/", (req, res) => res.json({ status: "Hotel bot running ✓" }));
 
+// -- POST /send-message -- generic text message (used for captain/waiter order-ready alerts) --
+app.post("/send-message", async (req, res) => {
+  try {
+    const { phone, text } = req.body;
+    if (!phone || !text) return res.status(400).json({ error: "phone and text required" });
+    const { sendMessage } = require("./whatsapp");
+    await sendMessage(phone, text);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // -- POST /send-optin -- called by PMS when booking is created ----
 app.post("/send-optin", async (req, res) => {
   try {
