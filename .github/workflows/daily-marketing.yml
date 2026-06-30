@@ -1,0 +1,16 @@
+name: Daily Marketing SMS Trigger
+
+on:
+  schedule:
+    # 10:00 AM IST = 04:30 UTC
+    - cron: '30 4 * * *'
+  workflow_dispatch: # allows manual trigger from GitHub UI too
+
+jobs:
+  trigger-marketing:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake up Render and trigger marketing SMS
+        run: |
+          curl -s "https://hotel-whatsapp-bot-2ole.onrender.com/send-marketing-now?key=hotelease2026" || true
+          echo "Marketing SMS triggered"
