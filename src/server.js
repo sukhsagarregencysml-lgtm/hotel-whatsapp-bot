@@ -345,92 +345,36 @@ function saveSentNumbers(sentSet) {
 
 async function fetchAgentNumbers() {
   try {
+    // Use public CSV export — no OAuth needed, just make sheet public
     const csvUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=leads&range=E:E`;
     const res = await axios.get(csvUrl, { timeout: 15000 });
-    const rows = res.data.split("\n").map(r => r.replace(/"/g,"").trim());
+    const rows = res.data.split("\n");
     const numbers = rows
-      .map(n => String(n).replace(/\D/g,""))
+      .map(r => r.replace(/"/g, "").trim())
+      .map(n => String(n).replace(/\D/g, ""))
       .filter(n => n.length >= 10 && n.length <= 13)
       .map(n => n.startsWith("91") ? n : "91" + n.slice(-10));
     const unique = [...new Set(numbers)];
-    console.log(`📋 Fetched ${unique.length} numbers from leads tab`);
+    console.log(`📋 Fetched ${unique.length} numbers from sheet`);
     return unique;
-  } catch(err) {
+  } catch (err) {
     console.error("Google Sheets fetch error:", err.message);
+    // Fallback to API key method
     try {
       const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/leads!E:E?key=${SHEETS_API_KEY}`;
       const res2 = await axios.get(url, { timeout: 10000 });
-      const numbers = (res2.data?.values || []).flat()
-        .map(n => String(n).replace(/\D/g,""))
+      const rows = res2.data?.values || [];
+      const numbers = rows
+        .flat()
+        .map(n => String(n).replace(/\D/g, ""))
         .filter(n => n.length >= 10 && n.length <= 13)
         .map(n => n.startsWith("91") ? n : "91" + n.slice(-10));
       return [...new Set(numbers)];
     } catch(err2) {
-      console.error("Fallback fetch failed:", err2.message);
+      console.error("Fallback fetch also failed:", err2.message);
       return [];
     }
   }
-}
-
-// One-time send to Leads Own tab column B
-async function sendToLeadsOwn() {
-  console.log("📣 Sending to Leads Own tab...");
-  try {
-    const csvUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Leads Own&range=B:B`;
-    const res = await axios.get(csvUrl, { timeout: 15000 });
-    const rows = res.data.split("\n").slice(1); // skip header
-    const numbers = rows
-      .map(r => r.replace(/"/g,"").trim())
-      .map(n => String(n).replace(/\D/g,""))
-      .filter(n => n.length >= 10 && n.length <= 13)
-      .map(n => n.startsWith("91") ? n : "91" + n.slice(-10));
-    const unique = [...new Set(numbers)];
-    console.log(`📋 Found ${unique.length} numbers in Leads Own`);
-
-    const phoneId = process.env.WA_PHONE_NUMBER_ID;
-    const token = process.env.WA_ACCESS_TOKEN;
-    let sent = 0, failed = 0;
-
-    for (const number of unique) {
-      try {
-        await axios.post(
-          `https://graph.facebook.com/v25.0/${phoneId}/messages`,
-          {
-            messaging_product: "whatsapp",
-            recipient_type: "individual",
-            to: number,
-            type: "template",
-            template: {
-              name: MARKETING_TEMPLATE,
-              language: { code: "en" },
-              components: [{
-                type: "header",
-                parameters: [{ type: "image", image: { id: "1567521214956263" } }]
-              }]
-            }
-          },
-          { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } }
-        );
-        sent++;
-        console.log(`✓ Sent to ${number} (${sent}/${unique.length})`);
-        await new Promise(r => setTimeout(r, 500));
-      } catch(err) {
-        failed++;
-        console.error(`✗ Failed ${number}:`, err.response?.data?.error?.message || err.message);
-      }
-    }
-
-    // Notify admin
-    const { sendMessage } = require("./whatsapp");
-    const ADMIN_PHONE = process.env.ADMIN_PHONE || "919816003322";
-    await sendMessage(ADMIN_PHONE,
-      `📣 *LEADS OWN MARKETING DONE*\n\n` +
-      `✅ Sent: ${sent}\n` +
-      `❌ Failed: ${failed}\n` +
-      `📊 Total: ${unique.length}`
-    );
-    console.log(`📣 Leads Own done: ${sent} sent, ${failed} failed`);
-  } catch(e) { console.error("Leads Own send error:", e.message); }
 }
 
 async function sendMarketingSMS() {
@@ -475,7 +419,7 @@ async function sendMarketingSMS() {
                   {
                     type: "image",
                     image: {
-                      id: "1567521214956263"
+                      id: "1762267245220002"
                     }
                   }
                 ]
@@ -557,43 +501,21 @@ cron.schedule("*/10 * * * *", async () => {
 console.log("📣 Daily marketing SMS scheduled at 10:00 AM IST");
 
 // Manual trigger endpoint
-const ADMIN_SECRET = process.env.ADMIN_SECRET || "hotelease2026";
-function checkAdmin(req, res) {
-  const key = req.headers["x-admin-key"] || req.query.key;
-  if (key !== ADMIN_SECRET) { res.status(403).json({ error: "Unauthorized" }); return false; }
-  return true;
-}
-
-// Send to Leads Own tab (one-time trigger)
-app.get("/send-leads-own", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  res.json({ success: true, message: "Sending to Leads Own tab now — check Render logs" });
-  sendToLeadsOwn();
-});
-
-// Trigger daily marketing now
-app.get("/send-marketing-now", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  res.json({ success: true, message: "Marketing SMS started" });
-  sendMarketingSMS();
-});
-
 app.post("/send-marketing", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
   res.json({ success: true, message: "Marketing SMS started" });
-  sendMarketingSMS();
+  await sendMarketingSMS();
 });
 
+// Check status endpoint
 app.get("/marketing-status", (req, res) => {
-  if (!checkAdmin(req, res)) return;
   const sent = loadSentNumbers();
   res.json({ totalSent: sent.size, numbers: [...sent] });
 });
 
-app.get("/marketing-reset", (req, res) => {
-  if (!checkAdmin(req, res)) return;
+// Reset sent list (if you want to resend to everyone)
+app.post("/marketing-reset", (req, res) => {
   saveSentNumbers(new Set());
-  res.json({ success: true, message: "Sent list cleared" });
+  res.json({ success: true, message: "Sent list cleared — will send to all numbers tomorrow" });
 });
 
 // ── AC STATUS REMINDER — every 2 hours ─────────────────────────
