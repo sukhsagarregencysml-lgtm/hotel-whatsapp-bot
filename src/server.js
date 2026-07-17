@@ -377,6 +377,9 @@ async function fetchAgentNumbers() {
   }
 }
 
+const DAILY_LIMIT = 55;
+const COST_PER_MSG = 0.58;
+
 async function sendMarketingSMS() {
   console.log("📣 Starting daily marketing SMS...");
   const allNumbers = await fetchAgentNumbers();
@@ -393,14 +396,21 @@ async function sendMarketingSMS() {
 
   if (!newNumbers.length) {
     console.log("No new numbers to send today — all already received the message");
+    const { sendMessage } = require("./whatsapp");
+    const ADMIN = process.env.ADMIN_PHONE || "919816003322";
+    await sendMessage(ADMIN, `📣 *DAILY MARKETING*\n\nNo new numbers to send today.\nTotal ever sent: ${sentNumbers.size}`);
     return;
   }
+
+  // Limit to 55 per day
+  const toSend = newNumbers.slice(0, DAILY_LIMIT);
+  console.log(`📊 Sending to ${toSend.length} numbers today (limit: ${DAILY_LIMIT})`);
 
   const phoneId = process.env.WA_PHONE_NUMBER_ID;
   const token = process.env.WA_ACCESS_TOKEN;
   let sent = 0, failed = 0;
 
-  for (const number of newNumbers) {
+  for (const number of toSend) {
     try {
       await axios.post(
         `https://graph.facebook.com/v25.0/${phoneId}/messages`,
@@ -459,7 +469,25 @@ async function sendMarketingSMS() {
 
   // Save updated sent list
   saveSentNumbers(sentNumbers);
-  console.log(`📣 Done: ${sent} sent, ${failed} failed. Total ever sent: ${sentNumbers.size}`);
+
+  // Notify admin
+  try {
+    const { sendMessage } = require("./whatsapp");
+    const ADMIN = process.env.ADMIN_PHONE || "919816003322";
+    const cost = (sent * COST_PER_MSG).toFixed(2);
+    const remaining = newNumbers.length - toSend.length;
+    await sendMessage(ADMIN,
+      `📣 *DAILY MARKETING REPORT*\n\n` +
+      `✅ Sent: ${sent}\n` +
+      `❌ Failed: ${failed}\n` +
+      `📋 Remaining: ${remaining + failed}\n` +
+      `💰 Cost: ~Rs.${cost}\n` +
+      `📊 Total ever sent: ${sentNumbers.size}\n\n` +
+      `Daily limit: ${DAILY_LIMIT} messages/day`
+    );
+  } catch(e) { console.error("Admin notify error:", e.message); }
+
+  console.log(`📣 Done: ${sent} sent, ${failed} failed. Cost: Rs.${(sent * COST_PER_MSG).toFixed(2)}. Total: ${sentNumbers.size}`);
 }
 
 // Run at 10:00 AM IST (04:30 UTC) every day
