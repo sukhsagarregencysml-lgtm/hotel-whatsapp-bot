@@ -491,7 +491,7 @@ async function sendMarketingSMS() {
 }
 
 // Run at 10:00 AM IST (04:30 UTC) every day
-cron.schedule("30 4 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" });
+cron.schedule("0 10 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" }); // 10:00 AM IST
 
 // Check pending enquiry summaries every 10 minutes
 cron.schedule("*/10 * * * *", async () => {
@@ -528,35 +528,22 @@ cron.schedule("*/10 * * * *", async () => {
 }, { timezone: "Asia/Kolkata" });
 console.log("📣 Daily marketing SMS scheduled at 10:00 AM IST");
 
-const ADMIN_SECRET = process.env.ADMIN_SECRET || "hotelease2026";
-function checkAdmin(req, res) {
-  const key = req.headers["x-admin-key"] || req.query.key;
-  if (key !== ADMIN_SECRET) { res.status(403).json({ error: "Unauthorized" }); return false; }
-  return true;
-}
-
-app.get("/send-marketing-now", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  res.json({ success: true, message: "Marketing SMS started — check Render logs" });
-  sendMarketingSMS();
-});
-
+// Manual trigger endpoint
 app.post("/send-marketing", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
   res.json({ success: true, message: "Marketing SMS started" });
-  sendMarketingSMS();
+  await sendMarketingSMS();
 });
 
+// Check status endpoint
 app.get("/marketing-status", (req, res) => {
-  if (!checkAdmin(req, res)) return;
   const sent = loadSentNumbers();
   res.json({ totalSent: sent.size, numbers: [...sent] });
 });
 
-app.get("/marketing-reset", (req, res) => {
-  if (!checkAdmin(req, res)) return;
+// Reset sent list (if you want to resend to everyone)
+app.post("/marketing-reset", (req, res) => {
   saveSentNumbers(new Set());
-  res.json({ success: true, message: "Sent list cleared" });
+  res.json({ success: true, message: "Sent list cleared — will send to all numbers tomorrow" });
 });
 
 // ── AC STATUS REMINDER — every 2 hours ─────────────────────────
