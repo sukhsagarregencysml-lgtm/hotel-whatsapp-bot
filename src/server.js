@@ -470,12 +470,14 @@ async function sendMarketingSMS() {
   // Save updated sent list
   saveSentNumbers(sentNumbers);
 
-  // Notify admin
+  // Notify admin with numbers list
   try {
     const { sendMessage } = require("./whatsapp");
     const ADMIN = process.env.ADMIN_PHONE || "919816003322";
     const cost = (sent * COST_PER_MSG).toFixed(2);
     const remaining = newNumbers.length - toSend.length;
+
+    // Summary message
     await sendMessage(ADMIN,
       `📣 *DAILY MARKETING REPORT*\n\n` +
       `✅ Sent: ${sent}\n` +
@@ -485,6 +487,20 @@ async function sendMarketingSMS() {
       `📊 Total ever sent: ${sentNumbers.size}\n\n` +
       `Daily limit: ${DAILY_LIMIT} messages/day`
     );
+
+    // Numbers list message
+    const sentList = [...sentNumbers].slice(-sent); // last N sent numbers
+    const chunks = [];
+    for (let i = 0; i < sentList.length; i += 20) {
+      chunks.push(sentList.slice(i, i + 20));
+    }
+    for (let i = 0; i < chunks.length; i++) {
+      const nums = chunks[i].map((n, j) => `${i*20+j+1}. ${n}`).join("\n");
+      await sendMessage(ADMIN,
+        `📱 *Sent Numbers (${i*20+1}-${i*20+chunks[i].length}):*\n\n${nums}`
+      );
+      await new Promise(r => setTimeout(r, 1000));
+    }
   } catch(e) { console.error("Admin notify error:", e.message); }
 
   console.log(`📣 Done: ${sent} sent, ${failed} failed. Cost: Rs.${(sent * COST_PER_MSG).toFixed(2)}. Total: ${sentNumbers.size}`);
