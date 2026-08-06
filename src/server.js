@@ -327,8 +327,27 @@ const MARKETING_TEMPLATE = "sukhsagar_marketing_sms";
 
 const fs = require("fs");
 const SENT_NUMBERS_FILE = "./sent_marketing_numbers.json";
+const SENT_SHEET_NAME = "SentNumbers"; // Tab in Google Sheet to store sent numbers
 
-function loadSentNumbers() {
+// Load from Google Sheet first, fallback to local file
+async function loadSentNumbers() {
+  try {
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${SENT_SHEET_NAME}&range=A:A`;
+    const res = await axios.get(csvUrl, { timeout: 10000 });
+    const rows = res.data.split("\n").slice(1);
+    const numbers = rows
+      .map(r => r.replace(/"/g,"").trim())
+      .filter(n => n.length >= 10);
+    if (numbers.length > 0) {
+      console.log(`✓ Loaded ${numbers.length} sent numbers from Google Sheet`);
+      // Also save to local file as backup
+      try { fs.writeFileSync(SENT_NUMBERS_FILE, JSON.stringify(numbers), "utf8"); } catch(e) {}
+      return new Set(numbers);
+    }
+  } catch(e) {
+    console.log("Sheet load failed, using local file:", e.message);
+  }
+  // Fallback to local file
   try {
     if (fs.existsSync(SENT_NUMBERS_FILE)) {
       return new Set(JSON.parse(fs.readFileSync(SENT_NUMBERS_FILE, "utf8")));
@@ -337,10 +356,33 @@ function loadSentNumbers() {
   return new Set();
 }
 
-function saveSentNumbers(sentSet) {
+// Save to local file + Google Sheet
+async function saveSentNumbers(sentSet) {
+  // Always save local file
   try {
     fs.writeFileSync(SENT_NUMBERS_FILE, JSON.stringify([...sentSet]), "utf8");
-  } catch(e) { console.error("Save sent numbers error:", e.message); }
+  } catch(e) { console.error("Save local file error:", e.message); }
+
+  // Save to Google Sheet if service account available
+  if (process.env.GOOGLE_SERVICE_EMAIL && process.env.GOOGLE_SERVICE_KEY) {
+    try {
+      const { google } = require("googleapis");
+      const auth = new google.auth.JWT({
+        email: process.env.GOOGLE_SERVICE_EMAIL,
+        key: process.env.GOOGLE_SERVICE_KEY.replace(/\\n/g, "\n"),
+        scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+      });
+      const sheets = google.sheets({ version: "v4", auth });
+      const values = [["Phone"], ...[...sentSet].map(n => [n])];
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: `${SENT_SHEET_NAME}!A:A`,
+        valueInputOption: "RAW",
+        requestBody: { values },
+      });
+      console.log(`✓ Saved ${sentSet.size} sent numbers to Google Sheet`);
+    } catch(e) { console.log("Sheet save failed:", e.message); }
+  }
 }
 
 async function fetchAgentNumbers() {
@@ -389,7 +431,7 @@ async function sendMarketingSMS() {
   }
 
   // Only send to numbers NOT already sent to
-  const sentNumbers = loadSentNumbers();
+  const sentNumbers = await loadSentNumbers();
   const newNumbers = allNumbers.filter(n => !sentNumbers.has(n));
 
   console.log(`📊 Total in sheet: ${allNumbers.length} | Already sent: ${sentNumbers.size} | New today: ${newNumbers.length}`);
@@ -470,14 +512,12 @@ async function sendMarketingSMS() {
   // Save updated sent list
   saveSentNumbers(sentNumbers);
 
-  // Notify admin with numbers list
+  // Notify admin
   try {
     const { sendMessage } = require("./whatsapp");
     const ADMIN = process.env.ADMIN_PHONE || "919816003322";
     const cost = (sent * COST_PER_MSG).toFixed(2);
     const remaining = newNumbers.length - toSend.length;
-
-    // Summary message
     await sendMessage(ADMIN,
       `📣 *DAILY MARKETING REPORT*\n\n` +
       `✅ Sent: ${sent}\n` +
@@ -487,27 +527,13 @@ async function sendMarketingSMS() {
       `📊 Total ever sent: ${sentNumbers.size}\n\n` +
       `Daily limit: ${DAILY_LIMIT} messages/day`
     );
-
-    // Numbers list message
-    const sentList = [...sentNumbers].slice(-sent); // last N sent numbers
-    const chunks = [];
-    for (let i = 0; i < sentList.length; i += 20) {
-      chunks.push(sentList.slice(i, i + 20));
-    }
-    for (let i = 0; i < chunks.length; i++) {
-      const nums = chunks[i].map((n, j) => `${i*20+j+1}. ${n}`).join("\n");
-      await sendMessage(ADMIN,
-        `📱 *Sent Numbers (${i*20+1}-${i*20+chunks[i].length}):*\n\n${nums}`
-      );
-      await new Promise(r => setTimeout(r, 1000));
-    }
   } catch(e) { console.error("Admin notify error:", e.message); }
 
   console.log(`📣 Done: ${sent} sent, ${failed} failed. Cost: Rs.${(sent * COST_PER_MSG).toFixed(2)}. Total: ${sentNumbers.size}`);
 }
 
 // Run at 10:00 AM IST (04:30 UTC) every day
-cron.schedule("0 10 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" }); // 10:00 AM IST
+cron.schedule("30 4 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" });
 
 // Check pending enquiry summaries every 10 minutes
 cron.schedule("*/10 * * * *", async () => {
@@ -551,8 +577,9 @@ app.post("/send-marketing", async (req, res) => {
 });
 
 // Check status endpoint
-app.get("/marketing-status", (req, res) => {
-  const sent = loadSentNumbers();
+app.get("/marketing-status", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const sent = await loadSentNumbers();
   res.json({ totalSent: sent.size, numbers: [...sent] });
 });
 
