@@ -36,7 +36,7 @@ function extractDates(text) {
     }
   }
 
-  // Numeric: "22/7", "22-07-2026", "22.07.2026"
+  // Numeric: DD/MM/YY Indian format
   if (dates.length < 2) {
     const numRe = /(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?/g;
     while ((m = numRe.exec(text)) !== null) {
@@ -82,6 +82,32 @@ function extractGuestCounts(text) {
 
 function parseEnquiry(text) {
   if (!text || text.trim().length < 4) return null;
+
+  // -- Normalize text before parsing ------------------------------------
+  // Room type keywords
+  text = text.replace(/double\s+bed\s+rooms?/gi, "deluxe");
+  text = text.replace(/double\s+rooms?/gi, "deluxe");
+  text = text.replace(/twin\s+rooms?/gi, "deluxe");
+  text = text.replace(/single\s+rooms?/gi, "deluxe");
+  // Structured labels
+  text = text.replace(/total\s+rooms?\s*[:=]\s*(\d+)/gi, "$1 deluxe");
+  text = text.replace(/no\.?\s+of\s+rooms?\s*[:=]\s*(\d+)/gi, "$1 deluxe");
+  text = text.replace(/check\s*in\s*date\s*[:=]/gi, "checkin");
+  text = text.replace(/check\s*out\s*date\s*[:=]/gi, "checkout");
+  text = text.replace(/arrival\s*date\s*[:=]/gi, "checkin");
+  text = text.replace(/departure\s*date\s*[:=]/gi, "checkout");
+  text = text.replace(/meal\s*plan\s*[:=]/gi, "");
+  text = text.replace(/total\s*pax\s*[:=]/gi, "");
+  // Ordinals
+  text = text.replace(/(\d{1,2})(st|nd|rd|th)\b/gi, "$1");
+  // "of month"
+  text = text.replace(/(\d{1,2})\s+of\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec\w*)/gi, "$1 $2");
+  // Check in/out
+  text = text.replace(/check\s*[-]?\s*in\b/gi, "checkin");
+  text = text.replace(/check\s*[-]?\s*out\b/gi, "checkout");
+  text = text.replace(/\barrival\b/gi, "checkin");
+  text = text.replace(/\bdeparture\b/gi, "checkout");
+
   const lower = text.toLowerCase();
 
   // Must have at least a date to be an enquiry
@@ -182,12 +208,19 @@ function parseEnquiry(text) {
     return null;
   }
 
-  // ── Reject past dates — set flag ────────────────────────────
+  // ── Fix past dates — push to next year ────────────────────────
   if (result.ciDate) {
     const today = new Date(); today.setHours(0,0,0,0);
     const ci = new Date(result.ciDate);
     if (ci < today) {
-      result.isPastDate = true;
+      // Date is in the past — add 1 year
+      ci.setFullYear(ci.getFullYear() + 1);
+      result.ciDate = ci.toISOString().split("T")[0];
+      if (result.coDate) {
+        const co = new Date(result.coDate);
+        co.setFullYear(co.getFullYear() + 1);
+        result.coDate = co.toISOString().split("T")[0];
+      }
     }
   }
 
