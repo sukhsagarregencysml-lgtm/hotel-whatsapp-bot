@@ -8,8 +8,13 @@ const {
   sendMessage, sendTemplate, sendReminder, sendEnquiryAck,
   sendRoomAvailable, sendNotAvailable, sendConfirmed, sendAskPlan,
 } = require("./whatsapp");
-
 const ADMIN_PHONE = process.env.ADMIN_PHONE || "919816003322";
+const { syncChatMessage } = require("./chat-sync");
+
+// Save incoming message to PMS chat store (fire-and-forget)
+function saveChat(phone, message, guestName = null, roomNumber = null) {
+  syncChatMessage({ phone, message, direction: 'in', guestName, roomNumber });
+}
 
 // Session store
 const sessions = {};
@@ -61,6 +66,9 @@ async function getAgent(phone) {
 async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId }) {
   const t = (text || "").trim().toUpperCase();
   console.log(`MSG From ${from}: ${text || "[media]"}`);
+
+  // Save incoming message to PMS chat store
+  if (text) saveChat(from, text);
 
   // -- 10 MIN SUMMARY TRACKER ─────────────────────────────────────────────
   if (from !== ADMIN_PHONE) {
@@ -1658,6 +1666,46 @@ async function handleGuest(from, text, t, btnId = null) {
 }
 
 async function handleAdminReply(from, text, t) {
+  // REVIEW YES R1234 — post the drafted reply to Google as-is
+  if (t.startsWith("REVIEW YES")) {
+    const shortId = text.trim().split(/\s+/)[2];
+    const { approveReply } = require("./googleReviews");
+    const result = await approveReply(shortId);
+    await sendMessage(from, result.message);
+    return;
+  }
+
+  // REVIEW EDIT R1234 <custom reply text> — post a custom reply instead of the draft
+  if (t.startsWith("REVIEW EDIT")) {
+    const parts = text.trim().split(/\s+/);
+    const shortId = parts[2];
+    const customText = parts.slice(3).join(" ");
+    if (!customText) {
+      await sendMessage(from, "Usage: *REVIEW EDIT R1234 Your custom reply text here*");
+      return;
+    }
+    const { editAndPostReply } = require("./googleReviews");
+    const result = await editAndPostReply(shortId, customText);
+    await sendMessage(from, result.message);
+    return;
+  }
+
+  // REVIEW SKIP R1234 — ignore this review, no reply posted
+  if (t.startsWith("REVIEW SKIP")) {
+    const shortId = text.trim().split(/\s+/)[2];
+    const { skipReview } = require("./googleReviews");
+    const result = skipReview(shortId);
+    await sendMessage(from, result.message);
+    return;
+  }
+
+  // REVIEW LIST — show all pending review replies awaiting approval
+  if (t === "REVIEW LIST") {
+    const { listPendingDrafts } = require("./googleReviews");
+    await sendMessage(from, listPendingDrafts());
+    return;
+  }
+
   // APPROVE PAY 919XXXXXXXXX 5000
   if (t.startsWith("APPROVE PAY")) {
     const parts = text.trim().split(/\s+/);

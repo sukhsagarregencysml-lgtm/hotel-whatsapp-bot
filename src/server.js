@@ -55,6 +55,13 @@ app.post("/webhook", async (req, res) => {
     }
 
     console.log(`📨 From ${from} [${msgType}]: ${text}${buttonId ? ` (button: ${buttonId})` : ""}`);
+
+    // Sync inbound message to PMS + WA CRM
+    const { syncChatMessage } = require("./chat-sync");
+    const contacts = body.entry?.[0]?.changes?.[0]?.value?.contacts || [];
+    const guestName = contacts.find(c => c.wa_id === from)?.profile?.name || null;
+    syncChatMessage({ phone: from, guestName, direction: 'inbound', message: text || `[${msgType}]`, messageType: msgType, waMessageId: msg.id }).catch(() => {});
+
     await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId, buttonId });
   } catch (err) {
     console.error("Webhook error:", err.message);

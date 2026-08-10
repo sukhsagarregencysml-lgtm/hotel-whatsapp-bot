@@ -151,18 +151,9 @@ async function sendListMessage(to, bodyText, buttonLabel, sections, headerText =
 }
 
 // ── RATING BUTTONS ───────────────────────────────────────────────
+// Sent via approved template (quick reply buttons) — works outside the 24h customer window
 async function sendRatingButtons(to, guestName) {
-  return sendButtonMessage(
-    to,
-    `⭐ *How was your stay, ${guestName}?*\n\nWe'd love to hear your feedback!`,
-    [
-      { id: 'rating_5', title: '⭐⭐⭐⭐⭐ Excellent' },
-      { id: 'rating_4', title: '⭐⭐⭐⭐ Good' },
-      { id: 'rating_low', title: '⭐⭐⭐ Average' },
-    ],
-    null,
-    'Tap to rate your experience'
-  );
+  return sendTemplate(to, "guest_rating_request", [guestName || "Guest"]);
 }
 
 async function sendTemplate(to, templateName, params = []) {
@@ -236,17 +227,18 @@ async function sendHotelCheckin(to, { hotelName, guestName, room, checkout, plan
   return sendTemplate(to, "hotel_checkin", [hotelName || "Hotel", guestName || "Guest", room || "-", checkout || "-", plan || "-", wifi || "-"]);
 }
 
-async function sendHotelCheckout(to, { guestName, hotelName, roomType, roomCharges, extraCharges, gst, total, reviewLink }) {
+async function sendHotelCheckout(to, { guestName, hotelName, bookingId, checkinDate, checkoutDate, roomType, roomsCount, plan, total }) {
+  // Template: Dear {{1}}, ... at {{2}} | Booking ID: {{3}} | Check-in: {{4}} | Check-out: {{5}} | Room: {{6}} x {{7}} rooms | Plan: {{8}} | Amount: Rs.{{9}}
   return sendTemplate(to, "hotel_checkout", [
     guestName || "Guest",
     hotelName || "Hotel",
+    bookingId || "-",
+    checkinDate || "-",
+    checkoutDate || "-",
     roomType || "Room",
-    Number(roomCharges || 0).toLocaleString("en-IN"),
-    Number(extraCharges || 0).toLocaleString("en-IN"),
-    Number(gst || 0).toLocaleString("en-IN"),
-    Number(total || 0).toLocaleString("en-IN"),
-    reviewLink || "-",
-    hotelName || "Hotel"
+    String(roomsCount || 1),
+    plan || "-",
+    Number(total || 0).toLocaleString("en-IN")
   ]);
 }
 
