@@ -1,10 +1,7 @@
 const axios = require("axios");
 
 const PMS_URL = process.env.PMS_URL || "https://api.optisetup.in";
-<<<<<<< Updated upstream
-=======
 const WA_CRM_URL = process.env.WA_CRM_URL || "https://api.optisetup.in";
->>>>>>> Stashed changes
 const HOTEL_ID = process.env.HOTEL_UUID || "951b12be-b43d-421f-934c-10be06defd02";
 const WA_PHONE_ID = process.env.WA_PHONE_NUMBER_ID;
 
