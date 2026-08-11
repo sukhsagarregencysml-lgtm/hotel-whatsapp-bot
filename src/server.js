@@ -55,13 +55,6 @@ app.post("/webhook", async (req, res) => {
     }
 
     console.log(`📨 From ${from} [${msgType}]: ${text}${buttonId ? ` (button: ${buttonId})` : ""}`);
-
-    // Sync inbound message to PMS + WA CRM
-    const { syncChatMessage } = require("./chat-sync");
-    const contacts = body.entry?.[0]?.changes?.[0]?.value?.contacts || [];
-    const guestName = contacts.find(c => c.wa_id === from)?.profile?.name || null;
-    syncChatMessage({ phone: from, guestName, direction: 'inbound', message: text || `[${msgType}]`, messageType: msgType, waMessageId: msg.id }).catch(() => {});
-
     await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId, buttonId });
   } catch (err) {
     console.error("Webhook error:", err.message);
@@ -334,62 +327,62 @@ const MARKETING_TEMPLATE = "sukhsagar_marketing_sms";
 
 const fs = require("fs");
 const SENT_NUMBERS_FILE = "./sent_marketing_numbers.json";
-const SENT_SHEET_NAME = "SentNumbers"; // Tab in Google Sheet to store sent numbers
+const SENT_SHEET_ID = process.env.GOOGLE_SHEET_ID || process.env.AGENTS_SHEET_ID;
+const SENT_SHEET_NAME = "SentNumbers";
 
-// Load from Google Sheet first, fallback to local file
+// Load sent numbers from Google Sheet (persists across deploys)
 async function loadSentNumbers() {
   try {
-    const csvUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${SENT_SHEET_NAME}&range=A:A`;
-    const res = await axios.get(csvUrl, { timeout: 10000 });
-    const rows = res.data.split("\n").slice(1);
-    const numbers = rows
-      .map(r => r.replace(/"/g,"").trim())
-      .filter(n => n.length >= 10);
-    if (numbers.length > 0) {
-      console.log(`✓ Loaded ${numbers.length} sent numbers from Google Sheet`);
-      // Also save to local file as backup
-      try { fs.writeFileSync(SENT_NUMBERS_FILE, JSON.stringify(numbers), "utf8"); } catch(e) {}
-      return new Set(numbers);
-    }
+    const { google } = require("googleapis");
+    const auth = new google.auth.JWT({
+      email: process.env.GOOGLE_SERVICE_EMAIL,
+      key: (process.env.GOOGLE_SERVICE_KEY || "").replace(/\\n/g, "\n"),
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    });
+    const sheets = google.sheets({ version: "v4", auth });
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SENT_SHEET_ID,
+      range: `${SENT_SHEET_NAME}!A:A`,
+    });
+    const rows = res.data.values || [];
+    const numbers = rows.slice(1).map(r => r[0]).filter(n => n && n.length >= 10);
+    console.log(`✓ Loaded ${numbers.length} sent numbers from Google Sheet`);
+    // Cache to local file
+    try { fs.writeFileSync(SENT_NUMBERS_FILE, JSON.stringify(numbers), "utf8"); } catch(e) {}
+    return new Set(numbers);
   } catch(e) {
     console.log("Sheet load failed, using local file:", e.message);
+    try {
+      if (fs.existsSync(SENT_NUMBERS_FILE)) {
+        return new Set(JSON.parse(fs.readFileSync(SENT_NUMBERS_FILE, "utf8")));
+      }
+    } catch(e2) {}
+    return new Set();
   }
-  // Fallback to local file
-  try {
-    if (fs.existsSync(SENT_NUMBERS_FILE)) {
-      return new Set(JSON.parse(fs.readFileSync(SENT_NUMBERS_FILE, "utf8")));
-    }
-  } catch(e) { console.error("Load sent numbers error:", e.message); }
-  return new Set();
 }
 
-// Save to local file + Google Sheet
+// Save sent numbers to Google Sheet
 async function saveSentNumbers(sentSet) {
-  // Always save local file
+  // Save local file backup
+  try { fs.writeFileSync(SENT_NUMBERS_FILE, JSON.stringify([...sentSet]), "utf8"); } catch(e) {}
+  // Save to Google Sheet
   try {
-    fs.writeFileSync(SENT_NUMBERS_FILE, JSON.stringify([...sentSet]), "utf8");
-  } catch(e) { console.error("Save local file error:", e.message); }
-
-  // Save to Google Sheet if service account available
-  if (process.env.GOOGLE_SERVICE_EMAIL && process.env.GOOGLE_SERVICE_KEY) {
-    try {
-      const { google } = require("googleapis");
-      const auth = new google.auth.JWT({
-        email: process.env.GOOGLE_SERVICE_EMAIL,
-        key: process.env.GOOGLE_SERVICE_KEY.replace(/\\n/g, "\n"),
-        scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-      });
-      const sheets = google.sheets({ version: "v4", auth });
-      const values = [["Phone"], ...[...sentSet].map(n => [n])];
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: SHEET_ID,
-        range: `${SENT_SHEET_NAME}!A:A`,
-        valueInputOption: "RAW",
-        requestBody: { values },
-      });
-      console.log(`✓ Saved ${sentSet.size} sent numbers to Google Sheet`);
-    } catch(e) { console.log("Sheet save failed:", e.message); }
-  }
+    const { google } = require("googleapis");
+    const auth = new google.auth.JWT({
+      email: process.env.GOOGLE_SERVICE_EMAIL,
+      key: (process.env.GOOGLE_SERVICE_KEY || "").replace(/\\n/g, "\n"),
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    });
+    const sheets = google.sheets({ version: "v4", auth });
+    const values = [["Phone"], ...[...sentSet].map(n => [n])];
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SENT_SHEET_ID,
+      range: `${SENT_SHEET_NAME}!A:A`,
+      valueInputOption: "RAW",
+      requestBody: { values },
+    });
+    console.log(`✓ Saved ${sentSet.size} sent numbers to Google Sheet`);
+  } catch(e) { console.log("Sheet save failed:", e.message); }
 }
 
 async function fetchAgentNumbers() {
@@ -517,7 +510,7 @@ async function sendMarketingSMS() {
   }
 
   // Save updated sent list
-  saveSentNumbers(sentNumbers);
+  await saveSentNumbers(sentNumbers);
 
   // Notify admin
   try {
@@ -585,14 +578,13 @@ app.post("/send-marketing", async (req, res) => {
 
 // Check status endpoint
 app.get("/marketing-status", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
   const sent = await loadSentNumbers();
   res.json({ totalSent: sent.size, numbers: [...sent] });
 });
 
 // Reset sent list (if you want to resend to everyone)
-app.post("/marketing-reset", (req, res) => {
-  saveSentNumbers(new Set());
+app.post("/marketing-reset", async (req, res) => {
+  await saveSentNumbers(new Set());
   res.json({ success: true, message: "Sent list cleared — will send to all numbers tomorrow" });
 });
 
