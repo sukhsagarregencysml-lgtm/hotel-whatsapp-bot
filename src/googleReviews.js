@@ -50,7 +50,12 @@ const STAR_MAP = { ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5 };
 async function fetchReviews() {
   const token = await getAccessToken();
   const url = `https://mybusiness.googleapis.com/v4/accounts/${ACCOUNT_ID}/locations/${LOCATION_ID}/reviews`;
-  const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+  // Most-recent first, one page — new reviews always land at the top, so we never
+  // need to page through the whole history to spot them.
+  const res = await axios.get(url, {
+    headers: { Authorization: `Bearer ${token}` },
+    params: { orderBy: "updateTime desc", pageSize: 50 },
+  });
   return res.data?.reviews || [];
 }
 
@@ -86,7 +91,17 @@ async function checkForNewReviews() {
     return;
   }
 
+  // First run: mark every existing review as seen without notifying, so only
+  // reviews that arrive from here on trigger an alert.
+  const firstRun = !fs.existsSync(SEEN_REVIEWS_FILE);
   const seen = loadSeenReviewIds();
+  if (firstRun) {
+    reviews.forEach((r) => seen.add(r.reviewId));
+    saveSeenReviewIds(seen);
+    console.log(`⭐ Seeded ${seen.size} existing Google reviews — future reviews will notify.`);
+    return;
+  }
+
   const drafts = loadPendingDrafts();
   const newReviews = reviews.filter((r) => !seen.has(r.reviewId));
 
@@ -110,7 +125,8 @@ async function checkForNewReviews() {
         `📩 *New Google Review* ${starsDisplay(rating)}\n\n` +
         `"${review.comment || "(no written comment)"}"\n— ${review.reviewer?.displayName || "Guest"}\n\n` +
         `*Suggested reply:*\n"${draftReply}"\n\n` +
-        `Reply *REVIEW YES ${shortId}* to post this, *REVIEW EDIT ${shortId} <text>* to change it, or *REVIEW SKIP ${shortId}* to ignore.`
+        `Reply *OK* to post this reply to Google, *REVIEW EDIT ${shortId} <text>* to change it, or *REVIEW SKIP ${shortId}* to skip.\n` +
+        `_(ref ${shortId} — if more than one is pending, use *OK ${shortId}*)_`
       );
     } catch (e) { console.error("Review admin notify error:", e.message); }
   }
@@ -148,6 +164,22 @@ function skipReview(shortId) {
   return { success: true, message: `⏭️ Skipped review ${shortId} (${draft.reviewer}) — no reply posted` };
 }
 
+// Handles a plain "OK" (or "OK R1234") approval. Returns { handled:false } when
+// there are no pending drafts, so the caller can let other admin commands run.
+async function approveByOk(shortId) {
+  const drafts = loadPendingDrafts();
+  const ids = Object.keys(drafts);
+  if (!ids.length) return { handled: false };
+  if (shortId && drafts[shortId]) return { handled: true, ...(await approveReply(shortId)) };
+  if (!shortId && ids.length === 1) return { handled: true, ...(await approveReply(ids[0])) };
+  return {
+    handled: true, success: false,
+    message: shortId
+      ? `No pending review found for ${shortId}. Pending: ${ids.join(", ")}`
+      : `Multiple reviews pending (${ids.join(", ")}). Reply *OK <ref>*, e.g. OK ${ids[0]}`,
+  };
+}
+
 function listPendingDrafts() {
   const drafts = loadPendingDrafts();
   const ids = Object.keys(drafts);
@@ -157,5 +189,5 @@ function listPendingDrafts() {
 }
 
 module.exports = {
-  checkForNewReviews, approveReply, editAndPostReply, skipReview, listPendingDrafts,
+  checkForNewReviews, approveReply, editAndPostReply, skipReview, listPendingDrafts, approveByOk,
 };

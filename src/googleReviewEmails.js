@@ -12,10 +12,10 @@ const GMAIL_REFRESH_TOKEN = process.env.GOOGLE_GMAIL_REFRESH_TOKEN;
 
 const PROCESSED_FILE = "./processed_review_emails.json";
 
-// Broad net: Google's review notification subject lines vary ("You have a new
-// review", "X left you a review", "New review for ..."), so we search on the
-// common word rather than an exact phrase, scoped to recent unread mail.
-const GMAIL_QUERY = 'subject:(review) newer_than:3d';
+// Google Business Profile review notifications: from businessprofile-noreply@google.com
+// with subject "<Name> left a review for <Business>". Scoped to recent mail so a first
+// run doesn't blast every historical review.
+const GMAIL_QUERY = 'from:businessprofile-noreply@google.com subject:"left a review" newer_than:3d';
 
 function getGmailClient() {
   if (!CLIENT_ID || !CLIENT_SECRET || !GMAIL_REFRESH_TOKEN) return null;
@@ -53,25 +53,45 @@ function decodeBody(payload) {
   return walk(payload) || "";
 }
 
-// Best-effort extraction — Google's exact email wording isn't guaranteed to stay
-// stable, so the WhatsApp notification always includes the raw snippet as a
-// fallback in case a field isn't picked up correctly.
+// Strip the boilerplate (tracking links, standard footer copy) from the plain-text
+// body so what's left is human-readable — used as a fallback in the WhatsApp message.
+function cleanBody(body) {
+  return body
+    .replace(/<https?:\/\/[^>]+>/g, "")
+    .replace(/https?:\/\/\S+/g, "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .filter((l) => !/^(Read review|Reply to review|Go to reviews)/i.test(l))
+    .join("\n");
+}
+
+// Extracts from the real GBP notification format:
+//   Subject: "<Name> left a review for <Business>"
+//   Body:    "...you got a new <N>-star review..." and either the written review
+//            text or "This user only left a rating".
 function parseReviewFromEmail(subject, body) {
-  const nameMatch = subject.match(/from ([A-Za-z][\w' .-]*)/i) || body.match(/^([A-Za-z][\w' .-]*) (?:left|wrote|rated)/im);
+  const nameMatch = subject.match(/^(.+?) left a review for/i);
   const reviewer = nameMatch ? nameMatch[1].trim() : "";
 
   let rating = 0;
-  const starWordMatch = body.match(/(\d)(?:\s*-\s*|\s+)star/i) || subject.match(/(\d)(?:\s*-\s*|\s+)star/i);
-  if (starWordMatch) rating = parseInt(starWordMatch[1], 10);
-  if (!rating) {
-    const starGlyphs = (body.match(/★/g) || []).length;
-    if (starGlyphs >= 1 && starGlyphs <= 5) rating = starGlyphs;
+  const starMatch = body.match(/(\d)\s*-\s*star review/i) || subject.match(/(\d)\s*-\s*star/i);
+  if (starMatch) rating = parseInt(starMatch[1], 10);
+
+  let comment = "";
+  const ratingOnly = /only left a rating/i.test(body);
+  if (!ratingOnly) {
+    // Text reviews put the comment between the "Read review" link and "Reply to review".
+    const between = body.match(/Read review[\s\S]*?\n([\s\S]*?)Reply to review/i);
+    if (between) {
+      const lines = cleanBody(between[1])
+        .split("\n")
+        .filter((l) => !/^\S+\s*Star$/i.test(l)); // drop the "<name> Star" rating line
+      comment = lines.slice(1).join(" ").trim().slice(0, 700); // skip the reviewer-name line
+    }
   }
 
-  const quoteMatch = body.match(/"([^"]{5,700})"/);
-  const comment = quoteMatch ? quoteMatch[1].trim() : "";
-
-  return { reviewer, rating, comment };
+  return { reviewer, rating, comment, ratingOnly };
 }
 
 function makeShortId(gmailMessageId) {
@@ -100,28 +120,31 @@ async function checkReviewEmails() {
   const newRefs = messageRefs.filter((m) => !processed.has(m.id));
 
   for (const ref of newRefs) {
-    processed.add(ref.id);
     try {
       const msgRes = await gmail.users.messages.get({ userId: "me", id: ref.id, format: "full" });
       const headers = msgRes.data.payload?.headers || [];
       const subject = headers.find((h) => h.name === "Subject")?.value || "";
       const from = headers.find((h) => h.name === "From")?.value || "";
-      if (!/google/i.test(from)) continue; // skip anything not actually from Google
+      if (!/google/i.test(from)) { processed.add(ref.id); continue; } // not from Google — won't ever notify, mark done
 
       const body = decodeBody(msgRes.data.payload);
-      const { reviewer, rating, comment } = parseReviewFromEmail(subject, body);
+      const { reviewer, rating, comment, ratingOnly } = parseReviewFromEmail(subject, body);
       const draftReply = draftReplyForRating(rating, reviewer.split(" ")[0] || "");
       const shortId = makeShortId(ref.id);
-      const snippet = (msgRes.data.snippet || "").slice(0, 200);
+
+      let reviewLine;
+      if (comment) reviewLine = `"${comment}"`;
+      else if (ratingOnly) reviewLine = "_(rating only — no written comment)_";
+      else reviewLine = `Couldn't read the text automatically. Email excerpt:\n${cleanBody(body).slice(0, 300)}`;
 
       await sendMessage(ADMIN,
         `📩 *New Google Review (via email)* ${rating ? starsDisplay(rating) : "(rating unclear)"}\n\n` +
-        (comment ? `"${comment}"\n` : `Raw email snippet: "${snippet}"\n`) +
-        `— ${reviewer || "Guest"}\n\n` +
+        `${reviewLine}\n— ${reviewer || "Guest"}\n\n` +
         `*Suggested reply:*\n"${draftReply}"\n\n` +
         `⚠️ Auto-posting isn't available yet (waiting on Google's Business Profile API approval) — copy this reply and paste it into the Business Profile app under this review.\n\n` +
         `Reference: ${shortId}`
       );
+      processed.add(ref.id); // mark done only after a successful notify, so failed sends retry next run
     } catch (e) { console.error("Review email process error:", e.response?.data || e.message); }
   }
 
