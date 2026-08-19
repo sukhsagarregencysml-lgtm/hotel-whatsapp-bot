@@ -527,13 +527,22 @@ async function sendMarketingSMS() {
       `📊 Total ever sent: ${sentNumbers.size}\n\n` +
       `Daily limit: ${DAILY_LIMIT} messages/day`
     );
+
+    // Send numbers list in chunks of 20
+    const sentList = toSend.slice(0, sent);
+    for (let i = 0; i < sentList.length; i += 20) {
+      const chunk = sentList.slice(i, i + 20);
+      const nums = chunk.map((n, j) => `${i+j+1}. ${n}`).join("\n");
+      await sendMessage(ADMIN, `📱 *Sent (${i+1}-${i+chunk.length}):*\n\n${nums}`);
+      await new Promise(r => setTimeout(r, 1000));
+    }
   } catch(e) { console.error("Admin notify error:", e.message); }
 
   console.log(`📣 Done: ${sent} sent, ${failed} failed. Cost: Rs.${(sent * COST_PER_MSG).toFixed(2)}. Total: ${sentNumbers.size}`);
 }
 
 // Run at 10:00 AM IST (04:30 UTC) every day
-cron.schedule("0 10 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" });
+cron.schedule("0 10 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" }); // 10:00 AM IST
 
 // Check pending enquiry summaries every 10 minutes
 cron.schedule("*/10 * * * *", async () => {
