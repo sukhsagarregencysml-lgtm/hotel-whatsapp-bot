@@ -471,7 +471,7 @@ async function sendMarketingSMS() {
                   {
                     type: "image",
                     image: {
-                      id: "1762267245220002"
+                      link: "https://i.ibb.co/fVXYCgvS/2022-04-21.png"
                     }
                   }
                 ]
