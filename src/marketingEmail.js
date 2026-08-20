@@ -4,12 +4,6 @@
 // local file backup) so the same person isn't emailed twice.
 const fs = require("fs");
 const axios = require("axios");
-const nodemailer = require("nodemailer");
-
-// Render's network has no working IPv6 route, but Node 18+ defaults to whatever
-// order the OS DNS resolver returns — which put Gmail's AAAA record first and
-// caused every SMTP connection to die with ENETUNREACH. Force IPv4 resolution.
-require("dns").setDefaultResultOrder("ipv4first");
 
 const EMAIL_SHEET_ID = process.env.MARKETING_EMAIL_SHEET_ID;
 const EMAIL_SHEET_GID = process.env.MARKETING_EMAIL_SHEET_GID || "0";
@@ -24,21 +18,19 @@ const HOTEL_NAME = process.env.HOTEL_NAME || "Hotel Sukhsagar Regency";
 const MARKETING_SUBJECT = process.env.MARKETING_EMAIL_SUBJECT || `Special Offer from ${HOTEL_NAME}, Shimla`;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function getTransporter() {
-  return nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 587, // 465 (implicit TLS) connections time out on Render — 587 (STARTTLS) is less commonly blocked
-    secure: false,
-    requireTLS: true,
-    family: 4, // Render's network can't route Gmail's IPv6 SMTP address (ENETUNREACH) — force IPv4
-    auth: {
-      user: process.env.EMAIL_USER || "info@sukhsagarregency.com",
-      pass: process.env.EMAIL_PASS,
-    },
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 20000,
-  });
+// Render's plan blocks/blackholes outbound SMTP (465 and 587 both hang or die
+// with ENETUNREACH regardless of DNS/IPv4 fixes) — send over plain HTTPS via
+// Resend's API instead, which isn't affected by that restriction.
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const MARKETING_EMAIL_FROM = process.env.MARKETING_EMAIL_FROM || `${HOTEL_NAME} <onboarding@resend.dev>`;
+
+async function sendViaResend(to, subject, html) {
+  const res = await axios.post(
+    "https://api.resend.com/emails",
+    { from: MARKETING_EMAIL_FROM, to, subject, html },
+    { headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" }, timeout: 20000 }
+  );
+  return res.data;
 }
 
 async function fetchEmailLeads() {
@@ -217,23 +209,15 @@ function marketingEmailHtml() {
 // Sends the template to specific addresses only — no sheet fetch, no sent-tracking.
 // For previewing the email in a real inbox before the daily batch runs.
 async function sendTestMarketingEmail(recipients) {
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-    throw new Error("EMAIL_USER/EMAIL_PASS not set");
-  }
-  const transporter = getTransporter();
+  if (!RESEND_API_KEY) throw new Error("RESEND_API_KEY not set");
   const html = marketingEmailHtml();
   const results = [];
   for (const email of recipients) {
     try {
-      await transporter.sendMail({
-        from: `"${HOTEL_NAME}" <${process.env.EMAIL_USER}>`,
-        to: email,
-        subject: `[TEST] ${MARKETING_SUBJECT}`,
-        html,
-      });
+      await sendViaResend(email, `[TEST] ${MARKETING_SUBJECT}`, html);
       results.push({ email, ok: true });
     } catch (err) {
-      results.push({ email, ok: false, error: err.message });
+      results.push({ email, ok: false, error: err.response?.data?.message || err.message });
     }
   }
   return results;
@@ -241,8 +225,8 @@ async function sendTestMarketingEmail(recipients) {
 
 async function sendMarketingEmailBlast() {
   console.log("📧 Starting daily marketing email...");
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-    console.log("EMAIL_USER/EMAIL_PASS not set — skipping marketing email");
+  if (!RESEND_API_KEY) {
+    console.log("RESEND_API_KEY not set — skipping marketing email");
     return;
   }
 
@@ -270,25 +254,19 @@ async function sendMarketingEmailBlast() {
   const toSend = newEmails.slice(0, DAILY_EMAIL_LIMIT);
   console.log(`📊 Sending to ${toSend.length} emails today (limit: ${DAILY_EMAIL_LIMIT})`);
 
-  const transporter = getTransporter();
   const html = marketingEmailHtml();
   let sent = 0, failed = 0;
 
   for (const email of toSend) {
     try {
-      await transporter.sendMail({
-        from: `"${HOTEL_NAME}" <${process.env.EMAIL_USER}>`,
-        to: email,
-        subject: MARKETING_SUBJECT,
-        html,
-      });
+      await sendViaResend(email, MARKETING_SUBJECT, html);
       sentEmails.add(email);
       sent++;
       console.log(`✓ Marketing email sent to ${email} (${sent}/${newEmails.length})`);
-      await new Promise((r) => setTimeout(r, 800)); // avoid Gmail rate limiting
+      await new Promise((r) => setTimeout(r, 600)); // stay under Resend's rate limit
     } catch (err) {
       failed++;
-      console.error(`✗ Failed to send to ${email}:`, err.message);
+      console.error(`✗ Failed to send to ${email}:`, err.response?.data?.message || err.message);
     }
   }
 
