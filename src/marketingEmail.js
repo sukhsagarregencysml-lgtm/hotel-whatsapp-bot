@@ -99,30 +99,132 @@ async function saveSentEmails(sentSet) {
   } catch (e) { console.log("Sent-emails sheet save failed:", e.message); }
 }
 
+// Real photos + copy pulled from sukhsagarregency.com (see below for source URLs).
+const SITE = "https://www.sukhsagarregency.com";
+const WA_BOOK_LINK = "https://wa.me/919816003322?text=Hi%2C%20I%27m%20interested%20in%20booking%20a%20stay";
+const ROOMS = [
+  { name: "Executive Suite", img: `${SITE}/img/rooms/1.png` },
+  { name: "Honeymoon Room", img: `${SITE}/img/rooms/2.png` },
+  { name: "Super Deluxe", img: `${SITE}/img/rooms/3.png` },
+  { name: "Deluxe Room", img: `${SITE}/img/rooms/4.png` },
+];
+
+function roomCell(room) {
+  return `
+    <td width="50%" style="padding:6px" valign="top">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eee">
+        <tr><td>
+          <img src="${room.img}" alt="${room.name}" width="270" style="display:block;width:100%;max-width:270px;height:auto">
+        </td></tr>
+        <tr><td style="padding:10px;text-align:center;background:#fafafa">
+          <span style="font-size:14px;font-weight:bold;color:#1a1a2e">${room.name}</span>
+        </td></tr>
+      </table>
+    </td>`;
+}
+
 function marketingEmailHtml() {
   return `
-    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-      <div style="background:#1a1a2e;padding:24px;text-align:center">
-        <h2 style="color:#C9A84C;margin:0">${HOTEL_NAME}</h2>
-        <p style="color:#fff;margin:6px 0;font-size:14px">Shimla, Himachal Pradesh</p>
-      </div>
-      <div style="padding:24px;border:1px solid #eee;color:#333;line-height:1.6">
-        <p>Dear Guest,</p>
-        <p>We'd love to host you again at ${HOTEL_NAME}. Enjoy special rates on your next stay in the hills of Shimla — comfortable rooms, great views, and warm hospitality await.</p>
-        <p style="text-align:center;margin:28px 0">
-          <a href="https://wa.me/919816003322?text=Hi%2C%20I%27m%20interested%20in%20booking%20a%20stay"
-             style="background:#C9A84C;color:#fff;padding:12px 28px;border-radius:4px;text-decoration:none;font-weight:bold">
-            Book Now on WhatsApp
+  <div style="background:#f0f0f0;padding:20px 0;font-family:Arial,Helvetica,sans-serif">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+    <tr><td align="center">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff">
+
+        <!-- Header -->
+        <tr><td style="background:#1a1a2e;padding:20px;text-align:center">
+          <img src="${SITE}/img/logo.png" alt="${HOTEL_NAME}" height="40" style="height:40px;width:auto">
+        </td></tr>
+
+        <!-- Hero -->
+        <tr><td>
+          <img src="${SITE}/img/banner/01.jpg" alt="${HOTEL_NAME} — Shimla" width="600" style="display:block;width:100%;height:auto">
+        </td></tr>
+        <tr><td style="background:#C9A84C;padding:14px;text-align:center">
+          <span style="color:#fff;font-size:18px;font-weight:bold;letter-spacing:0.5px">A LUXURY RESORT IN THE SHIMLA HILLS</span>
+        </td></tr>
+
+        <!-- Welcome -->
+        <tr><td style="padding:26px 28px 8px;color:#333;line-height:1.6;font-size:15px">
+          <p style="margin:0 0 14px">Dear Guest,</p>
+          <p style="margin:0 0 14px">
+            We'd love to host you again at <strong>${HOTEL_NAME}</strong> — set at the foothills of the Himalayas
+            in Taradevi, Shimla, with sweeping sunrise-to-sunset views of the whole valley. 50 rooms and suites,
+            each configured for a genuinely comfortable stay, and warm hospitality throughout.
+          </p>
+          <p style="margin:0;text-align:center">
+            <a href="${WA_BOOK_LINK}" style="background:#C9A84C;color:#fff;padding:13px 32px;border-radius:4px;text-decoration:none;font-weight:bold;font-size:15px;display:inline-block">
+              Book Now on WhatsApp
+            </a>
+          </p>
+        </td></tr>
+
+        <!-- Rooms -->
+        <tr><td style="padding:22px 22px 4px">
+          <h3 style="margin:0 0 4px;color:#1a1a2e;font-size:17px;border-bottom:2px solid #C9A84C;padding-bottom:8px">Rooms &amp; Suites</h3>
+        </td></tr>
+        <tr><td style="padding:6px 16px 10px">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+            <tr>${roomCell(ROOMS[0])}${roomCell(ROOMS[1])}</tr>
+            <tr>${roomCell(ROOMS[2])}${roomCell(ROOMS[3])}</tr>
+          </table>
+        </td></tr>
+
+        <!-- Pool / facilities -->
+        <tr><td style="padding:16px 22px 0">
+          <h3 style="margin:0 0 4px;color:#1a1a2e;font-size:17px;border-bottom:2px solid #C9A84C;padding-bottom:8px">Facilities</h3>
+        </td></tr>
+        <tr><td style="padding:10px 16px">
+          <img src="${SITE}/img/about/swimmingpool.jpg" alt="Swimming pool" width="556" style="display:block;width:100%;height:auto;border-radius:4px">
+        </td></tr>
+        <tr><td style="padding:8px 28px 24px;color:#333;line-height:1.6;font-size:14px">
+          Dining that covers every taste, an open-air terrace, and conference halls for seamless meetings —
+          plus indoor &amp; outdoor games: pool table, table tennis, and card rooms.
+        </td></tr>
+
+        <!-- Closing CTA -->
+        <tr><td style="padding:0 28px 28px;text-align:center">
+          <a href="${WA_BOOK_LINK}" style="background:#1a1a2e;color:#C9A84C;padding:13px 32px;border-radius:4px;text-decoration:none;font-weight:bold;font-size:15px;display:inline-block">
+            Check Availability &amp; Rates
           </a>
-        </p>
-        <p>Reply to this email or call us to check availability and rates.</p>
-      </div>
-      <div style="background:#f5f5f5;padding:15px;text-align:center;font-size:12px;color:#666">
-        ${HOTEL_NAME}, Shimla, Himachal Pradesh<br>
-        📞 +91 98160 03322 | info@sukhsagarregency.com
-      </div>
-    </div>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="background:#1a1a2e;padding:20px;text-align:center;font-size:12px;color:#cfcfcf">
+          <strong style="color:#fff">${HOTEL_NAME}</strong><br>
+          Near Goel Motors, Taradevi, Shimla, Himachal Pradesh<br>
+          📞 +91 98160 03322 &nbsp;|&nbsp; 📧 info@sukhsagarregency.com &nbsp;|&nbsp; <a href="${SITE}" style="color:#C9A84C">sukhsagarregency.com</a>
+        </td></tr>
+
+      </table>
+    </td></tr>
+  </table>
+  </div>
   `;
+}
+
+// Sends the template to specific addresses only — no sheet fetch, no sent-tracking.
+// For previewing the email in a real inbox before the daily batch runs.
+async function sendTestMarketingEmail(recipients) {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    throw new Error("EMAIL_USER/EMAIL_PASS not set");
+  }
+  const transporter = getTransporter();
+  const html = marketingEmailHtml();
+  const results = [];
+  for (const email of recipients) {
+    try {
+      await transporter.sendMail({
+        from: `"${HOTEL_NAME}" <${process.env.EMAIL_USER}>`,
+        to: email,
+        subject: `[TEST] ${MARKETING_SUBJECT}`,
+        html,
+      });
+      results.push({ email, ok: true });
+    } catch (err) {
+      results.push({ email, ok: false, error: err.message });
+    }
+  }
+  return results;
 }
 
 async function sendMarketingEmailBlast() {
@@ -195,4 +297,4 @@ async function sendMarketingEmailBlast() {
   console.log(`📧 Done: ${sent} sent, ${failed} failed. Total: ${sentEmails.size}`);
 }
 
-module.exports = { sendMarketingEmailBlast, loadSentEmails, saveSentEmails };
+module.exports = { sendMarketingEmailBlast, sendTestMarketingEmail, loadSentEmails, saveSentEmails };

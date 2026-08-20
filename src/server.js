@@ -545,12 +545,25 @@ async function sendMarketingSMS() {
 cron.schedule("0 10 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" }); // 10:00 AM IST
 
 // ── DAILY MARKETING EMAIL — 10:30 AM IST ──────────────────────
-const { sendMarketingEmailBlast, loadSentEmails, saveSentEmails } = require("./marketingEmail");
+const { sendMarketingEmailBlast, sendTestMarketingEmail, loadSentEmails, saveSentEmails } = require("./marketingEmail");
 
 app.get("/send-marketing-email-now", async (req, res) => {
   if (!checkAdmin(req, res)) return;
   res.json({ success: true, message: "Marketing email started — check Render logs" });
   sendMarketingEmailBlast();
+});
+
+// Test the template on specific addresses only — no sheet fetch, no sent-tracking.
+app.get("/send-marketing-email-test", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const to = String(req.query.to || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (!to.length) { res.status(400).json({ error: "Provide ?to=email1,email2" }); return; }
+  try {
+    const results = await sendTestMarketingEmail(to);
+    res.json({ success: true, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get("/marketing-email-status", async (req, res) => {
