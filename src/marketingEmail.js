@@ -6,6 +6,11 @@ const fs = require("fs");
 const axios = require("axios");
 const nodemailer = require("nodemailer");
 
+// Render's network has no working IPv6 route, but Node 18+ defaults to whatever
+// order the OS DNS resolver returns — which put Gmail's AAAA record first and
+// caused every SMTP connection to die with ENETUNREACH. Force IPv4 resolution.
+require("dns").setDefaultResultOrder("ipv4first");
+
 const EMAIL_SHEET_ID = process.env.MARKETING_EMAIL_SHEET_ID;
 const EMAIL_SHEET_GID = process.env.MARKETING_EMAIL_SHEET_GID || "0";
 const EMAIL_SHEET_RANGE = process.env.MARKETING_EMAIL_SHEET_RANGE || "A:A";
