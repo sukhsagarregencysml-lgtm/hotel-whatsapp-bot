@@ -26,6 +26,9 @@ function getTransporter() {
       user: process.env.EMAIL_USER || "info@sukhsagarregency.com",
       pass: process.env.EMAIL_PASS,
     },
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 20000,
   });
 }
 
