@@ -27,8 +27,9 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 function getTransporter() {
   return nodemailer.createTransport({
     host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
+    port: 587, // 465 (implicit TLS) connections time out on Render — 587 (STARTTLS) is less commonly blocked
+    secure: false,
+    requireTLS: true,
     family: 4, // Render's network can't route Gmail's IPv6 SMTP address (ENETUNREACH) — force IPv4
     auth: {
       user: process.env.EMAIL_USER || "info@sukhsagarregency.com",
