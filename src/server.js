@@ -544,6 +544,30 @@ async function sendMarketingSMS() {
 // Run at 10:00 AM IST (04:30 UTC) every day
 cron.schedule("0 10 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" }); // 10:00 AM IST
 
+// ── DAILY MARKETING EMAIL — 10:30 AM IST ──────────────────────
+const { sendMarketingEmailBlast, loadSentEmails, saveSentEmails } = require("./marketingEmail");
+
+app.get("/send-marketing-email-now", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  res.json({ success: true, message: "Marketing email started — check Render logs" });
+  sendMarketingEmailBlast();
+});
+
+app.get("/marketing-email-status", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const sent = await loadSentEmails();
+  res.json({ totalSent: sent.size, emails: [...sent] });
+});
+
+app.get("/marketing-email-reset", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  await saveSentEmails(new Set());
+  res.json({ success: true, message: "Sent email list cleared" });
+});
+
+cron.schedule("30 10 * * *", sendMarketingEmailBlast, { timezone: "Asia/Kolkata" }); // 10:30 AM IST
+console.log("📧 Daily marketing email scheduled at 10:30 AM IST");
+
 // Check pending enquiry summaries every 10 minutes
 cron.schedule("*/10 * * * *", async () => {
   try {
