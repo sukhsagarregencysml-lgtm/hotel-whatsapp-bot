@@ -4,6 +4,7 @@
 // local file backup) so the same person isn't emailed twice.
 const fs = require("fs");
 const axios = require("axios");
+const { google } = require("googleapis");
 
 const EMAIL_SHEET_ID = process.env.MARKETING_EMAIL_SHEET_ID;
 const EMAIL_SHEET_GID = process.env.MARKETING_EMAIL_SHEET_GID || "0";
@@ -19,18 +20,42 @@ const MARKETING_SUBJECT = process.env.MARKETING_EMAIL_SUBJECT || `Special Offer 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // Render's plan blocks/blackholes outbound SMTP (465 and 587 both hang or die
-// with ENETUNREACH regardless of DNS/IPv4 fixes) — send over plain HTTPS via
-// Resend's API instead, which isn't affected by that restriction.
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const MARKETING_EMAIL_FROM = process.env.MARKETING_EMAIL_FROM || `${HOTEL_NAME} <onboarding@resend.dev>`;
+// with ENETUNREACH regardless of DNS/IPv4 fixes). The Gmail API is a plain HTTPS
+// call to googleapis.com, not SMTP, so it isn't affected — and it actually sends
+// as the real Gmail account (correct SPF/DKIM), unlike a third-party relay trying
+// to claim a @gmail.com From address. Reuses the OAuth client already set up for
+// review-reading, with a separate send-scoped refresh token (see scripts/get-gmail-send-token.js).
+const GMAIL_SEND_FROM = process.env.EMAIL_USER || "sukhsagarregencysml@gmail.com";
+const GBP_CLIENT_ID = process.env.GOOGLE_GBP_CLIENT_ID;
+const GBP_CLIENT_SECRET = process.env.GOOGLE_GBP_CLIENT_SECRET;
+const GMAIL_SEND_REFRESH_TOKEN = process.env.GOOGLE_GMAIL_SEND_REFRESH_TOKEN;
 
-async function sendViaResend(to, subject, html) {
-  const res = await axios.post(
-    "https://api.resend.com/emails",
-    { from: MARKETING_EMAIL_FROM, to, subject, html },
-    { headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" }, timeout: 20000 }
-  );
-  return res.data;
+function getGmailSendClient() {
+  if (!GBP_CLIENT_ID || !GBP_CLIENT_SECRET || !GMAIL_SEND_REFRESH_TOKEN) return null;
+  const auth = new google.auth.OAuth2(GBP_CLIENT_ID, GBP_CLIENT_SECRET);
+  auth.setCredentials({ refresh_token: GMAIL_SEND_REFRESH_TOKEN });
+  return google.gmail({ version: "v1", auth });
+}
+
+function encodeMimeMessage({ from, to, subject, html }) {
+  const encodedSubject = `=?utf-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`;
+  const message = [
+    `From: ${from}`,
+    `To: ${to}`,
+    `Subject: ${encodedSubject}`,
+    "MIME-Version: 1.0",
+    'Content-Type: text/html; charset="UTF-8"',
+    "",
+    html,
+  ].join("\r\n");
+  return Buffer.from(message, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function sendViaGmail(to, subject, html) {
+  const gmail = getGmailSendClient();
+  if (!gmail) throw new Error("Gmail send not configured — set GOOGLE_GMAIL_SEND_REFRESH_TOKEN");
+  const raw = encodeMimeMessage({ from: `"${HOTEL_NAME}" <${GMAIL_SEND_FROM}>`, to, subject, html });
+  await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
 }
 
 async function fetchEmailLeads() {
@@ -209,15 +234,15 @@ function marketingEmailHtml() {
 // Sends the template to specific addresses only — no sheet fetch, no sent-tracking.
 // For previewing the email in a real inbox before the daily batch runs.
 async function sendTestMarketingEmail(recipients) {
-  if (!RESEND_API_KEY) throw new Error("RESEND_API_KEY not set");
+  if (!getGmailSendClient()) throw new Error("Gmail send not configured — set GOOGLE_GMAIL_SEND_REFRESH_TOKEN");
   const html = marketingEmailHtml();
   const results = [];
   for (const email of recipients) {
     try {
-      await sendViaResend(email, `[TEST] ${MARKETING_SUBJECT}`, html);
+      await sendViaGmail(email, `[TEST] ${MARKETING_SUBJECT}`, html);
       results.push({ email, ok: true });
     } catch (err) {
-      results.push({ email, ok: false, error: err.response?.data?.message || err.message });
+      results.push({ email, ok: false, error: err.response?.data?.error?.message || err.message });
     }
   }
   return results;
@@ -225,8 +250,8 @@ async function sendTestMarketingEmail(recipients) {
 
 async function sendMarketingEmailBlast() {
   console.log("📧 Starting daily marketing email...");
-  if (!RESEND_API_KEY) {
-    console.log("RESEND_API_KEY not set — skipping marketing email");
+  if (!getGmailSendClient()) {
+    console.log("Gmail send not configured (GOOGLE_GMAIL_SEND_REFRESH_TOKEN) — skipping marketing email");
     return;
   }
 
@@ -259,14 +284,14 @@ async function sendMarketingEmailBlast() {
 
   for (const email of toSend) {
     try {
-      await sendViaResend(email, MARKETING_SUBJECT, html);
+      await sendViaGmail(email, MARKETING_SUBJECT, html);
       sentEmails.add(email);
       sent++;
       console.log(`✓ Marketing email sent to ${email} (${sent}/${newEmails.length})`);
-      await new Promise((r) => setTimeout(r, 600)); // stay under Resend's rate limit
+      await new Promise((r) => setTimeout(r, 600)); // stay under Gmail API rate limits
     } catch (err) {
       failed++;
-      console.error(`✗ Failed to send to ${email}:`, err.response?.data?.message || err.message);
+      console.error(`✗ Failed to send to ${email}:`, err.response?.data?.error?.message || err.message);
     }
   }
 
