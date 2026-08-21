@@ -328,7 +328,7 @@ const MARKETING_TEMPLATE = "sukhsagar_marketing_sms";
 const fs = require("fs");
 const SENT_NUMBERS_FILE = "./sent_marketing_numbers.json";
 const SENT_SHEET_ID = "1_j7ZR95Q6sChI95R_HJ2WZ-l_jhc8IcPvWGt7zIiZog"; // Same sheet as leads/agents
-const SENT_SHEET_NAME = "SentNumbers";
+const SENT_SHEET_NAME = "Sent Numbers"; // Tab name in Google Sheet
 
 // Load sent numbers from Google Sheet (persists across deploys)
 async function loadSentNumbers() {
