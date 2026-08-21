@@ -327,7 +327,7 @@ const MARKETING_TEMPLATE = "sukhsagar_marketing_sms";
 
 const fs = require("fs");
 const SENT_NUMBERS_FILE = "./sent_marketing_numbers.json";
-const SENT_SHEET_ID = process.env.GOOGLE_SHEET_ID || process.env.AGENTS_SHEET_ID;
+const SENT_SHEET_ID = "1_j7ZR95Q6sChI95R_HJ2WZ-l_jhc8IcPvWGt7zIiZog"; // Same sheet as leads/agents
 const SENT_SHEET_NAME = "SentNumbers";
 
 // Load sent numbers from Google Sheet (persists across deploys)
@@ -382,10 +382,7 @@ async function saveSentNumbers(sentSet) {
       requestBody: { values },
     });
     console.log(`✓ Saved ${sentSet.size} sent numbers to Google Sheet`);
-  } catch(e) { 
-    console.error("Sheet save failed:", e.message);
-    console.error("Sheet save details:", e.response?.data || e.code || "unknown");
-  }
+  } catch(e) { console.log("Sheet save failed:", e.message); }
 }
 
 async function fetchAgentNumbers() {
