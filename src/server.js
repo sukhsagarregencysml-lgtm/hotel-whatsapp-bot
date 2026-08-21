@@ -382,7 +382,10 @@ async function saveSentNumbers(sentSet) {
       requestBody: { values },
     });
     console.log(`✓ Saved ${sentSet.size} sent numbers to Google Sheet`);
-  } catch(e) { console.log("Sheet save failed:", e.message); }
+  } catch(e) { 
+    console.error("Sheet save failed:", e.message);
+    console.error("Sheet save details:", e.response?.data || e.code || "unknown");
+  }
 }
 
 async function fetchAgentNumbers() {
@@ -527,59 +530,13 @@ async function sendMarketingSMS() {
       `📊 Total ever sent: ${sentNumbers.size}\n\n` +
       `Daily limit: ${DAILY_LIMIT} messages/day`
     );
-
-    // Send numbers list in chunks of 20
-    const sentList = toSend.slice(0, sent);
-    for (let i = 0; i < sentList.length; i += 20) {
-      const chunk = sentList.slice(i, i + 20);
-      const nums = chunk.map((n, j) => `${i+j+1}. ${n}`).join("\n");
-      await sendMessage(ADMIN, `📱 *Sent (${i+1}-${i+chunk.length}):*\n\n${nums}`);
-      await new Promise(r => setTimeout(r, 1000));
-    }
   } catch(e) { console.error("Admin notify error:", e.message); }
 
   console.log(`📣 Done: ${sent} sent, ${failed} failed. Cost: Rs.${(sent * COST_PER_MSG).toFixed(2)}. Total: ${sentNumbers.size}`);
 }
 
 // Run at 10:00 AM IST (04:30 UTC) every day
-cron.schedule("0 10 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" }); // 10:00 AM IST
-
-// ── DAILY MARKETING EMAIL — 10:30 AM IST ──────────────────────
-const { sendMarketingEmailBlast, sendTestMarketingEmail, loadSentEmails, saveSentEmails } = require("./marketingEmail");
-
-app.get("/send-marketing-email-now", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  res.json({ success: true, message: "Marketing email started — check Render logs" });
-  sendMarketingEmailBlast();
-});
-
-// Test the template on specific addresses only — no sheet fetch, no sent-tracking.
-app.get("/send-marketing-email-test", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  const to = String(req.query.to || "").split(",").map(s => s.trim()).filter(Boolean);
-  if (!to.length) { res.status(400).json({ error: "Provide ?to=email1,email2" }); return; }
-  try {
-    const results = await sendTestMarketingEmail(to);
-    res.json({ success: true, results });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/marketing-email-status", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  const sent = await loadSentEmails();
-  res.json({ totalSent: sent.size, emails: [...sent] });
-});
-
-app.get("/marketing-email-reset", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  await saveSentEmails(new Set());
-  res.json({ success: true, message: "Sent email list cleared" });
-});
-
-cron.schedule("30 10 * * *", sendMarketingEmailBlast, { timezone: "Asia/Kolkata" }); // 10:30 AM IST
-console.log("📧 Daily marketing email scheduled at 10:30 AM IST");
+cron.schedule("30 4 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" });
 
 // Check pending enquiry summaries every 10 minutes
 cron.schedule("*/10 * * * *", async () => {
