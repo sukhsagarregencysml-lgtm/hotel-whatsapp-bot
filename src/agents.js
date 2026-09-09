@@ -21,12 +21,12 @@ async function getAllAgents() {
     });
     const rows = res.data.values || [];
     // Sheet columns: A=date, B=city, C=name, D=phone
-    return rows.slice(1).filter(r => r[3]).map(r => ({
-      phone:    r[3]?.toString().trim().replace(/\D/g,""),
-      name:     r[2]?.toString().trim() || "Travel Agent",
-      category: "C", // All marketing leads are Category C
-      addedOn:  r[0]?.toString().trim() || "",
-      city:     r[1]?.toString().trim() || "",
+    return rows.slice(1).filter(r => r[0]).map(r => ({
+      phone:    r[0]?.toString().trim().replace(/\D/g,""),
+      name:     r[1]?.toString().trim() || "Travel Agent",
+      category: (r[2]?.toString().trim() || "C").toUpperCase(), // All marketing leads are Category C
+      addedOn:  r[3]?.toString().trim() || "",
+      
     }));
   } catch (err) {
     console.error("✗ Failed to get agents:", err.message);
