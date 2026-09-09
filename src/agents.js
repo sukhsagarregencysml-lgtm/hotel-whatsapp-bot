@@ -20,13 +20,11 @@ async function getAllAgents() {
       range: `${SHEET_NAME}!A:D`,
     });
     const rows = res.data.values || [];
-    // Sheet columns: A=date, B=city, C=name, D=phone
     return rows.slice(1).filter(r => r[0]).map(r => ({
-      phone:    r[0]?.toString().trim().replace(/\D/g,""),
-      name:     r[1]?.toString().trim() || "Travel Agent",
-      category: (r[2]?.toString().trim() || "C").toUpperCase(), // All marketing leads are Category C
+      phone:    r[0]?.toString().trim(),
+      name:     r[1]?.toString().trim() || "Agent",
+      category: r[2]?.toString().trim().toUpperCase() || "C",
       addedOn:  r[3]?.toString().trim() || "",
-      
     }));
   } catch (err) {
     console.error("✗ Failed to get agents:", err.message);
@@ -96,4 +94,8 @@ async function listAgents() {
   return `📋 *Active Agents (${agents.length}):*\n\n${lines.join("\n")}\n\n_ADD AGENT 91XXXXXXXXXX Name A/B/C_\n_REMOVE AGENT 91XXXXXXXXXX_`;
 }
 
-module.exports = { isAgent, getAgent, addAgent, removeAgent, listAgents, getAllAgents };
+async function getTally(phone) { return { roomsBooked: 0, freeRoomsUsed: 0 }; }
+async function updateTally(phone, name, rooms) { return { success: true, newRooms: 0, newlyEarned: 0 }; }
+async function useFreeRooms(phone, count) { return { success: true }; }
+
+module.exports = { isAgent, getAgent, addAgent, removeAgent, listAgents, getAllAgents, getTally, updateTally, useFreeRooms };
