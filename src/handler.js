@@ -532,6 +532,61 @@ async function handleIncoming({ from, text, msgId, msgType, mediaId, buttonId })
     return;
   }
 
+  // B2B Rate Card
+  if (/b2b|b\s*to\s*b|agent.?rate|trade.?rate|tariff|rate.?card|rate.?list|send.*rate|your.*rate|hotel.*rate|best.*rate|season.*rate|cost.*season/i.test(t)) {
+    const cat = agent.category || "C";
+    const disc = cat === "A" ? 10 : cat === "B" ? 5 : 0;
+
+    const rates = {
+      peak: {
+        deluxe:      { CP: 4100, MAP: 4900, EP: 3500 },
+        superdeluxe: { CP: 4600, MAP: 5400, EP: 4000 },
+        honeymoon:   { CP: 5100, MAP: 5900, EP: 4500 },
+      },
+      off: {
+        deluxe:      { CP: 3000, MAP: 3600, EP: 2500 },
+        superdeluxe: { CP: 3500, MAP: 4100, EP: 3000 },
+        honeymoon:   { CP: 4000, MAP: 4600, EP: 3500 },
+      }
+    };
+
+    const applyDisc = (rate) => Math.round(rate * (1 - disc/100));
+
+    await sendMessage(from,
+      `Dear *${agent.name}*,\n\n` +
+      `As per your request, special *B2B Rates* as under:\n\n` +
+      `🏨 *HOTEL SUKHSAGAR REGENCY, SHIMLA*\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `🌸 *PEAK SEASON*\n` +
+      `_(Apr 15 – Jun 30 & Dec 21 – Jan 1)_\n\n` +
+      `*Deluxe Room*\n` +
+      `CP: Rs.${applyDisc(rates.peak.deluxe.CP).toLocaleString()} | MAP: Rs.${applyDisc(rates.peak.deluxe.MAP).toLocaleString()} | EP: Rs.${applyDisc(rates.peak.deluxe.EP).toLocaleString()}\n\n` +
+      `*Super Deluxe*\n` +
+      `CP: Rs.${applyDisc(rates.peak.superdeluxe.CP).toLocaleString()} | MAP: Rs.${applyDisc(rates.peak.superdeluxe.MAP).toLocaleString()} | EP: Rs.${applyDisc(rates.peak.superdeluxe.EP).toLocaleString()}\n\n` +
+      `*Honeymoon Suite*\n` +
+      `CP: Rs.${applyDisc(rates.peak.honeymoon.CP).toLocaleString()} | MAP: Rs.${applyDisc(rates.peak.honeymoon.MAP).toLocaleString()} | EP: Rs.${applyDisc(rates.peak.honeymoon.EP).toLocaleString()}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `❄️ *OFF SEASON*\n` +
+      `_(Jul – Dec 20 & Jan 2 – Apr 14)_\n\n` +
+      `*Deluxe Room*\n` +
+      `CP: Rs.${applyDisc(rates.off.deluxe.CP).toLocaleString()} | MAP: Rs.${applyDisc(rates.off.deluxe.MAP).toLocaleString()} | EP: Rs.${applyDisc(rates.off.deluxe.EP).toLocaleString()}\n\n` +
+      `*Super Deluxe*\n` +
+      `CP: Rs.${applyDisc(rates.off.superdeluxe.CP).toLocaleString()} | MAP: Rs.${applyDisc(rates.off.superdeluxe.MAP).toLocaleString()} | EP: Rs.${applyDisc(rates.off.superdeluxe.EP).toLocaleString()}\n\n` +
+      `*Honeymoon Suite*\n` +
+      `CP: Rs.${applyDisc(rates.off.honeymoon.CP).toLocaleString()} | MAP: Rs.${applyDisc(rates.off.honeymoon.MAP).toLocaleString()} | EP: Rs.${applyDisc(rates.off.honeymoon.EP).toLocaleString()}\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `*Your Category: ${cat}*${disc > 0 ? ` (${disc}% discount applied)` : ""}\n\n` +
+      `*Extra Bed:*\n` +
+      `CWB (above 10 yrs): Rs.800/night\n` +
+      `CNB (6-10 yrs): Rs.500/night\n` +
+      `Child under 5: Complimentary\n\n` +
+      `CP=Breakfast | MAP=Breakfast+Dinner | EP=Room only\n\n` +
+      `📞 +91 98160 03322\n` +
+      `To check availability reply with dates & room type.`
+    );
+    return;
+  }
+
   // Agent selected menu option
   if ((t === "1" || t === "MENU" || t === "0" || t === "HOME") && session.step !== "awaiting_confirm") {
     await sendAgentMenu(from, agent.name);
@@ -1651,43 +1706,6 @@ async function handleGuest(from, text, t, btnId = null) {
 }
 
 async function handleAdminReply(from, text, t) {
-  // APPROVE REVIEW — post the AI reply to Google review
-  if (t === "APPROVE REVIEW") {
-    try {
-      const axios = require("axios");
-      const res = await axios.post(
-        "https://srv1719045.hstgr.cloud/api/approve-latest",
-        {},
-        { headers: { "x-review-secret": process.env.REVIEW_FORWARD_SECRET } }
-      );
-      await sendMessage(from, res.data.message || "✅ Review reply posted.");
-    } catch (e) {
-      await sendMessage(from, "⚠️ Couldn't reach review service: " + (e.response?.data?.message || e.message));
-    }
-    return;
-  }
-
-  // EDIT REVIEW <new text> — edit the pending review reply before posting
-  if (t.startsWith("EDIT REVIEW ")) {
-    const newReply = text.slice("EDIT REVIEW ".length).trim();
-    if (!newReply) {
-      await sendMessage(from, "Format: *EDIT REVIEW your new reply text here*");
-      return;
-    }
-    try {
-      const axios = require("axios");
-      const res = await axios.post(
-        "https://srv1719045.hstgr.cloud/api/edit-latest",
-        { reply: newReply },
-        { headers: { "x-review-secret": process.env.REVIEW_FORWARD_SECRET } }
-      );
-      await sendMessage(from, res.data.message || "✅ Review reply updated. Send *APPROVE REVIEW* to post.");
-    } catch (e) {
-      await sendMessage(from, "⚠️ Couldn't update review: " + (e.response?.data?.message || e.message));
-    }
-    return;
-  }
-
   // APPROVE PAY 919XXXXXXXXX 5000
   if (t.startsWith("APPROVE PAY")) {
     const parts = text.trim().split(/\s+/);
