@@ -128,25 +128,34 @@ async function saveSentEmails(sentSet) {
   } catch (e) { console.log("Sent-emails sheet save failed:", e.message); }
 }
 
-// Real photos + copy pulled from sukhsagarregency.com (see below for source URLs).
+// Real photos + copy pulled from sukhsagarregency.com. The site was rebuilt on
+// Next.js at some point after this template was first written — its old static
+// /img/* paths all 404 now. Using only the stable /assets/* public-folder images
+// (served through the Next.js image endpoint), NOT the /_next/static/media/*
+// build-hashed ones, since those hashes change on every site redeploy and would
+// break this template again.
 const SITE = "https://www.sukhsagarregency.com";
 const WA_BOOK_LINK = "https://wa.me/919816003322?text=Hi%2C%20I%27m%20interested%20in%20booking%20a%20stay";
-const ROOMS = [
-  { name: "Executive Suite", img: `${SITE}/img/rooms/1.png` },
-  { name: "Honeymoon Room", img: `${SITE}/img/rooms/2.png` },
-  { name: "Super Deluxe", img: `${SITE}/img/rooms/3.png` },
-  { name: "Deluxe Room", img: `${SITE}/img/rooms/4.png` },
+const asset = (path, w) => `${SITE}/_next/image?url=${encodeURIComponent("/assets/" + path)}&w=${w}&q=75`;
+
+const AMENITIES = [
+  { name: "Indoor Heated Pool", img: asset("amenities/indoor-heated-pool.jpg", 640) },
+  { name: "Multi-Cuisine Restaurant", img: asset("amenities/multi-cuisine-restaurant.jpg", 640) },
+  { name: "Conference Hall", img: asset("amenities/conference-hall.jpg", 640) },
+  { name: "Rooms With a View", img: asset("amenities/rooms-with-a-view.jpg", 640) },
+  { name: "Grand Lobby", img: asset("amenities/grand-lobby.jpg", 640) },
+  { name: "Dedicated Parking", img: asset("amenities/dedicated-parking.jpg", 640) },
 ];
 
-function roomCell(room) {
+function amenityCell(item) {
   return `
-    <td width="50%" style="padding:6px" valign="top">
+    <td width="33.33%" style="padding:6px" valign="top">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eee">
         <tr><td>
-          <img src="${room.img}" alt="${room.name}" width="270" style="display:block;width:100%;max-width:270px;height:auto">
+          <img src="${item.img}" alt="${item.name}" width="180" style="display:block;width:100%;max-width:180px;height:auto">
         </td></tr>
-        <tr><td style="padding:10px;text-align:center;background:#fafafa">
-          <span style="font-size:14px;font-weight:bold;color:#1a1a2e">${room.name}</span>
+        <tr><td style="padding:8px;text-align:center;background:#fafafa">
+          <span style="font-size:12px;font-weight:bold;color:#1a1a2e">${item.name}</span>
         </td></tr>
       </table>
     </td>`;
@@ -161,12 +170,12 @@ function marketingEmailHtml() {
 
         <!-- Header -->
         <tr><td style="background:#1a1a2e;padding:20px;text-align:center">
-          <img src="${SITE}/img/logo.png" alt="${HOTEL_NAME}" height="40" style="height:40px;width:auto">
+          <img src="${asset("logo.png", 640)}" alt="${HOTEL_NAME}" height="40" style="height:40px;width:auto">
         </td></tr>
 
         <!-- Hero -->
         <tr><td>
-          <img src="${SITE}/img/banner/01.jpg" alt="${HOTEL_NAME} — Shimla" width="600" style="display:block;width:100%;height:auto">
+          <img src="${asset("landing-hero-1.jpg", 1200)}" alt="${HOTEL_NAME} — Shimla" width="600" style="display:block;width:100%;height:auto">
         </td></tr>
         <tr><td style="background:#C9A84C;padding:14px;text-align:center">
           <span style="color:#fff;font-size:18px;font-weight:bold;letter-spacing:0.5px">A LUXURY RESORT IN THE SHIMLA HILLS</span>
@@ -177,8 +186,8 @@ function marketingEmailHtml() {
           <p style="margin:0 0 14px">Dear Guest,</p>
           <p style="margin:0 0 14px">
             We'd love to host you again at <strong>${HOTEL_NAME}</strong> — set at the foothills of the Himalayas
-            in Taradevi, Shimla, with sweeping sunrise-to-sunset views of the whole valley. 50 rooms and suites,
-            each configured for a genuinely comfortable stay, and warm hospitality throughout.
+            in Taradevi, Shimla, with 50 centrally heated rooms and scenic views, an indoor heated pool, a
+            multi-cuisine restaurant, and a pillarless conference hall for up to 200 guests.
           </p>
           <p style="margin:0;text-align:center">
             <a href="${WA_BOOK_LINK}" style="background:#C9A84C;color:#fff;padding:13px 32px;border-radius:4px;text-decoration:none;font-weight:bold;font-size:15px;display:inline-block">
@@ -187,27 +196,25 @@ function marketingEmailHtml() {
           </p>
         </td></tr>
 
-        <!-- Rooms -->
+        <!-- Accommodations -->
         <tr><td style="padding:22px 22px 4px">
-          <h3 style="margin:0 0 4px;color:#1a1a2e;font-size:17px;border-bottom:2px solid #C9A84C;padding-bottom:8px">Rooms &amp; Suites</h3>
+          <h3 style="margin:0 0 4px;color:#1a1a2e;font-size:17px;border-bottom:2px solid #C9A84C;padding-bottom:8px">Luxurious Accommodations</h3>
         </td></tr>
-        <tr><td style="padding:6px 16px 10px">
-          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-            <tr>${roomCell(ROOMS[0])}${roomCell(ROOMS[1])}</tr>
-            <tr>${roomCell(ROOMS[2])}${roomCell(ROOMS[3])}</tr>
-          </table>
+        <tr><td style="padding:8px 28px 8px;color:#333;line-height:1.6;font-size:14px">
+          Choose from Deluxe, Super Deluxe, Honeymoon, or Executive Suite — each centrally heated in winter,
+          air-conditioned in summer, and with a scenic view of the Shimla hills. Every stay includes a welcome
+          drink, mineral water, and a tea/coffee maker in-room.
         </td></tr>
 
-        <!-- Pool / facilities -->
-        <tr><td style="padding:16px 22px 0">
-          <h3 style="margin:0 0 4px;color:#1a1a2e;font-size:17px;border-bottom:2px solid #C9A84C;padding-bottom:8px">Facilities</h3>
+        <!-- Amenities -->
+        <tr><td style="padding:16px 22px 4px">
+          <h3 style="margin:0 0 4px;color:#1a1a2e;font-size:17px;border-bottom:2px solid #C9A84C;padding-bottom:8px">Amenities</h3>
         </td></tr>
-        <tr><td style="padding:10px 16px">
-          <img src="${SITE}/img/about/swimmingpool.jpg" alt="Swimming pool" width="556" style="display:block;width:100%;height:auto;border-radius:4px">
-        </td></tr>
-        <tr><td style="padding:8px 28px 24px;color:#333;line-height:1.6;font-size:14px">
-          Dining that covers every taste, an open-air terrace, and conference halls for seamless meetings —
-          plus indoor &amp; outdoor games: pool table, table tennis, and card rooms.
+        <tr><td style="padding:6px 12px 10px">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+            <tr>${amenityCell(AMENITIES[0])}${amenityCell(AMENITIES[1])}${amenityCell(AMENITIES[2])}</tr>
+            <tr>${amenityCell(AMENITIES[3])}${amenityCell(AMENITIES[4])}${amenityCell(AMENITIES[5])}</tr>
+          </table>
         </td></tr>
 
         <!-- Closing CTA -->
