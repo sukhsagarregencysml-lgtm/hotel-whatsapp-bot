@@ -55,6 +55,8 @@ app.post("/webhook", async (req, res) => {
     }
 
     console.log(`📨 From ${from} [${msgType}]: ${text}${buttonId ? ` (button: ${buttonId})` : ""}`);
+    const { syncChatMessage } = require("./chat-sync");
+    syncChatMessage({ phone: from, direction: "inbound", message: text || buttonId || msgType, messageType: msgType, waMessageId: msg.id }).catch(() => {});
     await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId, buttonId });
   } catch (err) {
     console.error("Webhook error:", err.message);
