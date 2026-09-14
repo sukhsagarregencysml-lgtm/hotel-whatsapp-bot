@@ -32,7 +32,7 @@ async function syncChatMessage(payload) {
   // Sync to WA CRM
   if (WA_PHONE_ID) {
     try {
-      await axios.post(`${PMS_URL.replace(/\/$/, "")}/api/wa-crm/sync`, {
+      await axios.post(`${WA_CRM_URL.replace(/\/$/, "")}/api/wa-crm/sync`, {
         wa_phone_id: WA_PHONE_ID,
         phone,
         guest_name: payload.guestName || null,
