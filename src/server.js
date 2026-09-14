@@ -327,27 +327,19 @@ const MARKETING_TEMPLATE = "sukhsagar_marketing_sms";
 
 const fs = require("fs");
 const SENT_NUMBERS_FILE = "./sent_marketing_numbers.json";
-const SENT_SHEET_ID = "1_j7ZR95Q6sChI95R_HJ2WZ-l_jhc8IcPvWGt7zIiZog"; // Same sheet as leads/agents
-const SENT_SHEET_NAME = "Sent Numbers"; // Tab name in Google Sheet
+const SENT_SHEET_ID = "1_j7ZR95Q6sChI95R_HJ2WZ-l_jhc8IcPvWGt7zIiZog";
+const SENT_SHEET_NAME = "Sent Numbers";
 
 // Load sent numbers from Google Sheet (persists across deploys)
 async function loadSentNumbers() {
   try {
-    const { google } = require("googleapis");
-    const auth = new google.auth.JWT({
-      email: process.env.GOOGLE_SERVICE_EMAIL,
-      key: (process.env.GOOGLE_SERVICE_KEY || "").replace(/\\n/g, "\n"),
-      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-    });
-    const sheets = google.sheets({ version: "v4", auth });
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: SENT_SHEET_ID,
-      range: `${SENT_SHEET_NAME}!A:A`,
-    });
-    const rows = res.data.values || [];
-    const numbers = rows.slice(1).map(r => r[0]).filter(n => n && n.length >= 10);
-    console.log(`✓ Loaded ${numbers.length} sent numbers from Google Sheet`);
-    // Cache to local file
+    // Use CSV export — reliable, no auth needed
+    const encodedSheet = encodeURIComponent(SENT_SHEET_NAME);
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${SENT_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodedSheet}&range=A:A`;
+    const res = await axios.get(csvUrl, { timeout: 10000 });
+    const rows = res.data.split("\n").slice(1);
+    const numbers = rows.map(r => r.replace(/"/g,"").trim()).filter(n => n.length >= 10);
+    console.log(`✓ Loaded ${numbers.length} sent numbers from Sheet`);
     try { fs.writeFileSync(SENT_NUMBERS_FILE, JSON.stringify(numbers), "utf8"); } catch(e) {}
     return new Set(numbers);
   } catch(e) {
@@ -533,7 +525,7 @@ async function sendMarketingSMS() {
 }
 
 // Run at 10:00 AM IST (04:30 UTC) every day
-cron.schedule("0 10 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" });
+cron.schedule("30 4 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" });
 
 // Check pending enquiry summaries every 10 minutes
 cron.schedule("*/10 * * * *", async () => {
