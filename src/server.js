@@ -596,6 +596,43 @@ app.get("/marketing-reset", async (req, res) => {
   res.json({ success: true, message: "Sent list cleared" });
 });
 
+// ── DAILY MARKETING EMAIL — 10:30 AM IST ──────────────────────
+const { sendMarketingEmailBlast, sendTestMarketingEmail, loadSentEmails, saveSentEmails } = require("./marketingEmail");
+
+app.get("/send-marketing-email-now", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  res.json({ success: true, message: "Marketing email started — check Render logs" });
+  sendMarketingEmailBlast();
+});
+
+// Test the template on specific addresses only — no sheet fetch, no sent-tracking.
+app.get("/send-marketing-email-test", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const to = String(req.query.to || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (!to.length) { res.status(400).json({ error: "Provide ?to=email1,email2" }); return; }
+  try {
+    const results = await sendTestMarketingEmail(to);
+    res.json({ success: true, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/marketing-email-status", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const sent = await loadSentEmails();
+  res.json({ totalSent: sent.size, emails: [...sent] });
+});
+
+app.get("/marketing-email-reset", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  await saveSentEmails(new Set());
+  res.json({ success: true, message: "Sent email list cleared" });
+});
+
+cron.schedule("30 10 * * *", sendMarketingEmailBlast, { timezone: "Asia/Kolkata" }); // 10:30 AM IST
+console.log("📧 Daily marketing email scheduled at 10:30 AM IST");
+
 // ── AC STATUS REMINDER — every 2 hours ─────────────────────────
 const AC_REMINDER_PHONE = "918627038322";
 const AC_TEMPLATE_NAME = "ac_status_reminder";
