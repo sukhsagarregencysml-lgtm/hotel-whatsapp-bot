@@ -533,7 +533,7 @@ async function sendMarketingSMS() {
 }
 
 // Run at 10:00 AM IST (04:30 UTC) every day
-cron.schedule("30 4 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" });
+cron.schedule("0 10 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" });
 
 // Check pending enquiry summaries every 10 minutes
 cron.schedule("*/10 * * * *", async () => {
