@@ -51,11 +51,22 @@ function encodeMimeMessage({ from, to, subject, html }) {
   return Buffer.from(message, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+// googleapis' gaxios client has no default timeout — a single stalled request
+// (bad network blip, Gmail hiccup) would otherwise hang the whole batch loop
+// forever, since each send is awaited before moving to the next recipient.
 async function sendViaGmail(to, subject, html) {
   const gmail = getGmailSendClient();
   if (!gmail) throw new Error("Gmail send not configured — set GOOGLE_GMAIL_SEND_REFRESH_TOKEN");
   const raw = encodeMimeMessage({ from: `"${HOTEL_NAME}" <${GMAIL_SEND_FROM}>`, to, subject, html });
-  await gmail.users.messages.send({ userId: "me", requestBody: { raw } });
+  await withTimeout(gmail.users.messages.send({ userId: "me", requestBody: { raw } }), 20000, "Gmail send");
 }
 
 async function fetchEmailLeads() {
@@ -289,12 +300,18 @@ async function sendMarketingEmailBlast() {
   const html = marketingEmailHtml();
   let sent = 0, failed = 0;
 
+  const SAVE_EVERY = 10;
   for (const email of toSend) {
     try {
       await sendViaGmail(email, MARKETING_SUBJECT, html);
       sentEmails.add(email);
       sent++;
       console.log(`✓ Marketing email sent to ${email} (${sent}/${newEmails.length})`);
+      // Save progress periodically, not just at the end — Render's free tier can
+      // spin the service down mid-batch (no HTTP traffic keeps it alive during a
+      // long background job), which would otherwise silently lose all progress
+      // and risk re-emailing the same people on the next run.
+      if (sent % SAVE_EVERY === 0) await saveSentEmails(sentEmails);
       await new Promise((r) => setTimeout(r, 600)); // stay under Gmail API rate limits
     } catch (err) {
       failed++;
