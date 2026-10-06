@@ -597,12 +597,15 @@ app.get("/marketing-reset", async (req, res) => {
 });
 
 // ── DAILY MARKETING EMAIL — 10:30 AM IST ──────────────────────
-const { sendMarketingEmailBlast, sendTestMarketingEmail, loadSentEmails, saveSentEmails } = require("./marketingEmail");
+const { sendMarketingEmailBlast, sendTestMarketingEmail, loadSentEmails, saveSentEmails, seedSentEmails, getSentStorage, getDailyLimit } = require("./marketingEmail");
 
+// Optional ?limit=N sends only N this run (capped at 150) instead of the daily default.
 app.get("/send-marketing-email-now", async (req, res) => {
   if (!checkAdmin(req, res)) return;
-  res.json({ success: true, message: "Marketing email started — check Render logs" });
-  sendMarketingEmailBlast();
+  const n = parseInt(req.query.limit, 10);
+  const opts = Number.isInteger(n) && n > 0 ? { limit: n } : undefined;
+  res.json({ success: true, message: "Marketing email started — check Render logs", limit: opts ? Math.min(n, 150) : getDailyLimit() });
+  sendMarketingEmailBlast(opts);
 });
 
 // Test the template on specific addresses only — no sheet fetch, no sent-tracking.
@@ -621,7 +624,21 @@ app.get("/send-marketing-email-test", async (req, res) => {
 app.get("/marketing-email-status", async (req, res) => {
   if (!checkAdmin(req, res)) return;
   const sent = await loadSentEmails();
-  res.json({ totalSent: sent.size, emails: [...sent] });
+  // storage "sheet" = tracking survives deploys; "local-file" = it does NOT (risk of re-sending).
+  res.json({ totalSent: sent.size, dailyLimit: getDailyLimit(), storage: getSentStorage(), emails: [...sent] });
+});
+
+// Restore/merge addresses into the sent list: POST {"emails":["a@b.com", ...]}
+app.post("/marketing-email-seed", async (req, res) => {
+  if (!checkAdmin(req, res)) return;
+  const emails = Array.isArray(req.body && req.body.emails) ? req.body.emails : null;
+  if (!emails) { res.status(400).json({ error: 'POST JSON like {"emails":["a@b.com"]}' }); return; }
+  try {
+    const result = await seedSentEmails(emails);
+    res.json({ success: true, ...result, storage: getSentStorage() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get("/marketing-email-reset", async (req, res) => {

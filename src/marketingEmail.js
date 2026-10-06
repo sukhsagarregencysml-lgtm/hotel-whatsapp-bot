@@ -14,7 +14,8 @@ const SENT_EMAILS_FILE = "./sent_marketing_emails.json";
 const SENT_SHEET_ID = process.env.GOOGLE_SHEET_ID || process.env.AGENTS_SHEET_ID;
 const SENT_EMAILS_TAB = "SentEmails";
 
-const DAILY_EMAIL_LIMIT = parseInt(process.env.DAILY_EMAIL_LIMIT || "150", 10);
+const DAILY_EMAIL_LIMIT = parseInt(process.env.DAILY_EMAIL_LIMIT || "55", 10);
+const MAX_MANUAL_LIMIT = 150; // ceiling for the ?limit= override on the manual trigger
 const HOTEL_NAME = process.env.HOTEL_NAME || "Hotel Sukhsagar Regency";
 const MARKETING_SUBJECT = process.env.MARKETING_EMAIL_SUBJECT || `Special Offer from ${HOTEL_NAME}, Shimla`;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -91,43 +92,72 @@ async function fetchEmailLeads() {
   }
 }
 
-async function loadSentEmails() {
+// Where "already emailed" is tracked: the SentEmails tab of the tracking sheet
+// (persistent) or, if the Sheets API is unreachable, a local file. Render wipes
+// local files on every deploy/restart, so "local-file" means the list can be lost
+// and people could be emailed twice — exposed via /marketing-email-status.
+let sentStorage = "unknown";
+
+function getSheetsClient() {
+  const auth = new google.auth.JWT({
+    email: process.env.GOOGLE_SERVICE_EMAIL,
+    key: (process.env.GOOGLE_SERVICE_KEY || "").replace(/\\n/g, "\n"),
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
+  return google.sheets({ version: "v4", auth });
+}
+
+function readLocalSent() {
   try {
-    const { google } = require("googleapis");
-    const auth = new google.auth.JWT({
-      email: process.env.GOOGLE_SERVICE_EMAIL,
-      key: (process.env.GOOGLE_SERVICE_KEY || "").replace(/\\n/g, "\n"),
-      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    if (fs.existsSync(SENT_EMAILS_FILE)) return new Set(JSON.parse(fs.readFileSync(SENT_EMAILS_FILE, "utf8")));
+  } catch (e) {}
+  return new Set();
+}
+
+async function ensureSentTab(sheets) {
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SENT_SHEET_ID, fields: "sheets.properties.title" });
+  const exists = (meta.data.sheets || []).some((sh) => sh.properties.title === SENT_EMAILS_TAB);
+  if (!exists) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SENT_SHEET_ID,
+      requestBody: { requests: [{ addSheet: { properties: { title: SENT_EMAILS_TAB } } }] },
     });
-    const sheets = google.sheets({ version: "v4", auth });
+    console.log(`✓ Created "${SENT_EMAILS_TAB}" tab in tracking sheet`);
+  }
+}
+
+async function loadSentEmails() {
+  const local = readLocalSent();
+  try {
+    const sheets = getSheetsClient();
+    await ensureSentTab(sheets);
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: SENT_SHEET_ID,
       range: `${SENT_EMAILS_TAB}!A:A`,
     });
     const rows = res.data.values || [];
-    const emails = rows.slice(1).map((r) => r[0]).filter(Boolean);
-    console.log(`✓ Loaded ${emails.length} sent emails from Google Sheet`);
-    try { fs.writeFileSync(SENT_EMAILS_FILE, JSON.stringify(emails), "utf8"); } catch (e) {}
-    return new Set(emails);
+    const fromSheet = new Set(rows.slice(1).map((r) => r[0]).filter(Boolean));
+    // Union (never drop an address that either store knows about) so a stale
+    // copy can't cause a re-send; anything only in the local file is migrated
+    // into the sheet.
+    const merged = new Set([...fromSheet, ...local]);
+    sentStorage = "sheet";
+    console.log(`✓ Loaded ${fromSheet.size} sent emails from Google Sheet` + (merged.size > fromSheet.size ? ` (+${merged.size - fromSheet.size} from local file)` : ""));
+    if (merged.size > fromSheet.size) await saveSentEmails(merged);
+    else { try { fs.writeFileSync(SENT_EMAILS_FILE, JSON.stringify([...merged]), "utf8"); } catch (e) {} }
+    return merged;
   } catch (e) {
+    sentStorage = "local-file";
     console.log("Sent-emails sheet load failed, using local file:", e.message);
-    try {
-      if (fs.existsSync(SENT_EMAILS_FILE)) return new Set(JSON.parse(fs.readFileSync(SENT_EMAILS_FILE, "utf8")));
-    } catch (e2) {}
-    return new Set();
+    return local;
   }
 }
 
 async function saveSentEmails(sentSet) {
   try { fs.writeFileSync(SENT_EMAILS_FILE, JSON.stringify([...sentSet]), "utf8"); } catch (e) {}
   try {
-    const { google } = require("googleapis");
-    const auth = new google.auth.JWT({
-      email: process.env.GOOGLE_SERVICE_EMAIL,
-      key: (process.env.GOOGLE_SERVICE_KEY || "").replace(/\\n/g, "\n"),
-      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-    });
-    const sheets = google.sheets({ version: "v4", auth });
+    const sheets = getSheetsClient();
+    await ensureSentTab(sheets);
     const values = [["Email"], ...[...sentSet].map((e) => [e])];
     await sheets.spreadsheets.values.update({
       spreadsheetId: SENT_SHEET_ID,
@@ -135,8 +165,31 @@ async function saveSentEmails(sentSet) {
       valueInputOption: "RAW",
       requestBody: { values },
     });
+    // update() only overwrites as many rows as it is given, so a shorter list
+    // (e.g. after a reset) would leave stale rows below it. Clear the tail
+    // AFTER writing, so a crash can never leave the sheet empty.
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId: SENT_SHEET_ID,
+      range: `${SENT_EMAILS_TAB}!A${values.length + 1}:A`,
+    });
+    sentStorage = "sheet";
     console.log(`✓ Saved ${sentSet.size} sent emails to Google Sheet`);
-  } catch (e) { console.log("Sent-emails sheet save failed:", e.message); }
+  } catch (e) {
+    sentStorage = "local-file";
+    console.log("Sent-emails sheet save failed:", e.message);
+  }
+}
+
+// Merge addresses into the sent list (used to restore the list after a wipe).
+async function seedSentEmails(emails) {
+  const current = await loadSentEmails();
+  const before = current.size;
+  for (const e of emails) {
+    const v = String(e || "").trim().toLowerCase();
+    if (EMAIL_RE.test(v)) current.add(v);
+  }
+  await saveSentEmails(current);
+  return { before, after: current.size };
 }
 
 // Real photos + copy pulled from sukhsagarregency.com. The site was rebuilt on
@@ -266,7 +319,10 @@ async function sendTestMarketingEmail(recipients) {
   return results;
 }
 
-async function sendMarketingEmailBlast() {
+// opts.limit overrides the daily limit for a single manual run. The cron passes
+// its own context object here, which has no numeric `limit`, so it is ignored.
+async function sendMarketingEmailBlast(opts) {
+  const limit = opts && Number.isInteger(opts.limit) && opts.limit > 0 ? Math.min(opts.limit, MAX_MANUAL_LIMIT) : DAILY_EMAIL_LIMIT;
   console.log("📧 Starting daily marketing email...");
   if (!getGmailSendClient()) {
     console.log("Gmail send not configured (GOOGLE_GMAIL_SEND_REFRESH_TOKEN) — skipping marketing email");
@@ -294,8 +350,8 @@ async function sendMarketingEmailBlast() {
     return;
   }
 
-  const toSend = newEmails.slice(0, DAILY_EMAIL_LIMIT);
-  console.log(`📊 Sending to ${toSend.length} emails today (limit: ${DAILY_EMAIL_LIMIT})`);
+  const toSend = newEmails.slice(0, limit);
+  console.log(`📊 Sending to ${toSend.length} emails today (limit: ${limit})`);
 
   const html = marketingEmailHtml();
   let sent = 0, failed = 0;
@@ -329,11 +385,14 @@ async function sendMarketingEmailBlast() {
       `❌ Failed: ${failed}\n` +
       `📋 Remaining: ${remaining + failed}\n` +
       `📊 Total ever sent: ${sentEmails.size}\n\n` +
-      `Daily limit: ${DAILY_EMAIL_LIMIT} emails/day`
+      `Limit this run: ${limit} (daily default: ${DAILY_EMAIL_LIMIT})`
     );
   } catch (e) { console.error("Admin notify error:", e.message); }
 
   console.log(`📧 Done: ${sent} sent, ${failed} failed. Total: ${sentEmails.size}`);
 }
 
-module.exports = { sendMarketingEmailBlast, sendTestMarketingEmail, loadSentEmails, saveSentEmails };
+const getSentStorage = () => sentStorage;
+const getDailyLimit = () => DAILY_EMAIL_LIMIT;
+
+module.exports = { sendMarketingEmailBlast, sendTestMarketingEmail, loadSentEmails, saveSentEmails, seedSentEmails, getSentStorage, getDailyLimit };
