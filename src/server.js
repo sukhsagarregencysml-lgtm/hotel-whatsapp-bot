@@ -55,8 +55,6 @@ app.post("/webhook", async (req, res) => {
     }
 
     console.log(`📨 From ${from} [${msgType}]: ${text}${buttonId ? ` (button: ${buttonId})` : ""}`);
-    const { syncChatMessage } = require("./chat-sync");
-    syncChatMessage({ phone: from, direction: "inbound", message: text || buttonId || msgType, messageType: msgType, waMessageId: msg.id }).catch(() => {});
     await handleIncoming({ from, text, msgId: msg.id, msgType, mediaId, buttonId });
   } catch (err) {
     console.error("Webhook error:", err.message);
@@ -329,19 +327,27 @@ const MARKETING_TEMPLATE = "sukhsagar_marketing_sms";
 
 const fs = require("fs");
 const SENT_NUMBERS_FILE = "./sent_marketing_numbers.json";
-const SENT_SHEET_ID = "1_j7ZR95Q6sChI95R_HJ2WZ-l_jhc8IcPvWGt7zIiZog";
-const SENT_SHEET_NAME = "Sent Numbers";
+const SENT_SHEET_ID = process.env.GOOGLE_SHEET_ID || process.env.AGENTS_SHEET_ID;
+const SENT_SHEET_NAME = "SentNumbers";
 
 // Load sent numbers from Google Sheet (persists across deploys)
 async function loadSentNumbers() {
   try {
-    // Use CSV export — reliable, no auth needed
-    const encodedSheet = encodeURIComponent(SENT_SHEET_NAME);
-    const csvUrl = `https://docs.google.com/spreadsheets/d/${SENT_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodedSheet}&range=A:A`;
-    const res = await axios.get(csvUrl, { timeout: 10000 });
-    const rows = res.data.split("\n").slice(1);
-    const numbers = rows.map(r => r.replace(/"/g,"").trim()).filter(n => n.length >= 10);
-    console.log(`✓ Loaded ${numbers.length} sent numbers from Sheet`);
+    const { google } = require("googleapis");
+    const auth = new google.auth.JWT({
+      email: process.env.GOOGLE_SERVICE_EMAIL,
+      key: (process.env.GOOGLE_SERVICE_KEY || "").replace(/\\n/g, "\n"),
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    });
+    const sheets = google.sheets({ version: "v4", auth });
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SENT_SHEET_ID,
+      range: `${SENT_SHEET_NAME}!A:A`,
+    });
+    const rows = res.data.values || [];
+    const numbers = rows.slice(1).map(r => r[0]).filter(n => n && n.length >= 10);
+    console.log(`✓ Loaded ${numbers.length} sent numbers from Google Sheet`);
+    // Cache to local file
     try { fs.writeFileSync(SENT_NUMBERS_FILE, JSON.stringify(numbers), "utf8"); } catch(e) {}
     return new Set(numbers);
   } catch(e) {
@@ -526,8 +532,8 @@ async function sendMarketingSMS() {
   console.log(`📣 Done: ${sent} sent, ${failed} failed. Cost: Rs.${(sent * COST_PER_MSG).toFixed(2)}. Total: ${sentNumbers.size}`);
 }
 
-// Run at 10:00 AM IST (04:30 UTC) every day
-cron.schedule("30 4 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" });
+// Run at 10:00 AM IST every day
+cron.schedule("0 10 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" });
 
 // Check pending enquiry summaries every 10 minutes
 cron.schedule("*/10 * * * *", async () => {
@@ -595,60 +601,6 @@ app.get("/marketing-reset", async (req, res) => {
   await saveSentNumbers(new Set());
   res.json({ success: true, message: "Sent list cleared" });
 });
-
-// ── DAILY MARKETING EMAIL — 10:30 AM IST ──────────────────────
-const { sendMarketingEmailBlast, sendTestMarketingEmail, loadSentEmails, saveSentEmails, seedSentEmails, getSentStorage, getDailyLimit } = require("./marketingEmail");
-
-// Optional ?limit=N sends only N this run (capped at 150) instead of the daily default.
-app.get("/send-marketing-email-now", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  const n = parseInt(req.query.limit, 10);
-  const opts = Number.isInteger(n) && n > 0 ? { limit: n } : undefined;
-  res.json({ success: true, message: "Marketing email started — check Render logs", limit: opts ? Math.min(n, 150) : getDailyLimit() });
-  sendMarketingEmailBlast(opts);
-});
-
-// Test the template on specific addresses only — no sheet fetch, no sent-tracking.
-app.get("/send-marketing-email-test", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  const to = String(req.query.to || "").split(",").map(s => s.trim()).filter(Boolean);
-  if (!to.length) { res.status(400).json({ error: "Provide ?to=email1,email2" }); return; }
-  try {
-    const results = await sendTestMarketingEmail(to);
-    res.json({ success: true, results });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/marketing-email-status", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  const sent = await loadSentEmails();
-  // storage "sheet" = tracking survives deploys; "local-file" = it does NOT (risk of re-sending).
-  res.json({ totalSent: sent.size, dailyLimit: getDailyLimit(), storage: getSentStorage(), emails: [...sent] });
-});
-
-// Restore/merge addresses into the sent list: POST {"emails":["a@b.com", ...]}
-app.post("/marketing-email-seed", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  const emails = Array.isArray(req.body && req.body.emails) ? req.body.emails : null;
-  if (!emails) { res.status(400).json({ error: 'POST JSON like {"emails":["a@b.com"]}' }); return; }
-  try {
-    const result = await seedSentEmails(emails);
-    res.json({ success: true, ...result, storage: getSentStorage() });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/marketing-email-reset", async (req, res) => {
-  if (!checkAdmin(req, res)) return;
-  await saveSentEmails(new Set());
-  res.json({ success: true, message: "Sent email list cleared" });
-});
-
-cron.schedule("30 10 * * *", sendMarketingEmailBlast, { timezone: "Asia/Kolkata" }); // 10:30 AM IST
-console.log("📧 Daily marketing email scheduled at 10:30 AM IST");
 
 // ── AC STATUS REMINDER — every 2 hours ─────────────────────────
 const AC_REMINDER_PHONE = "918627038322";
