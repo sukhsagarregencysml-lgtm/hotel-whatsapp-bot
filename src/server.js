@@ -532,7 +532,7 @@ async function sendMarketingSMS() {
   console.log(`📣 Done: ${sent} sent, ${failed} failed. Cost: Rs.${(sent * COST_PER_MSG).toFixed(2)}. Total: ${sentNumbers.size}`);
 }
 
-// Run at 10:00 AM IST every day
+// Run at 10:00 AM IST (04:30 UTC) every day
 cron.schedule("0 10 * * *", sendMarketingSMS, { timezone: "Asia/Kolkata" });
 
 // Check pending enquiry summaries every 10 minutes
@@ -601,6 +601,72 @@ app.get("/marketing-reset", async (req, res) => {
   await saveSentNumbers(new Set());
   res.json({ success: true, message: "Sent list cleared" });
 });
+
+
+// ── BIRTHDAY WISHES CRON — 9 AM IST daily ──────────────────────
+const BIRTHDAY_SHEET_ID = "1tIf0RuVuDzGS2ddNMxTaZ8LHSOZQ-JYuZo5AoTL4AnM";
+
+async function sendBirthdayMessages() {
+  console.log("🎂 Running birthday cron...");
+  try {
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${BIRTHDAY_SHEET_ID}/gviz/tq?tqx=out:csv&range=A:F`;
+    const res = await axios.get(csvUrl, { timeout: 15000 });
+    const rows = res.data.split("\n").slice(1);
+
+    const todayIST = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+    const todayMD = `${String(todayIST.getMonth() + 1).padStart(2,"0")}-${String(todayIST.getDate()).padStart(2,"0")}`;
+    const in15 = new Date(todayIST); in15.setDate(in15.getDate() + 15);
+    const in15MD = `${String(in15.getMonth() + 1).padStart(2,"0")}-${String(in15.getDate()).padStart(2,"0")}`;
+
+    const { sendMessage: waSend } = require("./whatsapp");
+    let birthdayCount = 0, reminderCount = 0;
+
+    for (const row of rows) {
+      try {
+        const cols = row.match(/(".*?"|[^",\n]+)/g) || [];
+        const clean = cols.map(c => c.replace(/^"|"$/g, "").trim());
+        const name  = clean[1] || "";
+        let phone   = (clean[3] || "").replace(/\D/g, "");
+        const bday  = (clean[4] || "").trim();
+
+        if (!phone || phone.length < 10 || !bday || bday.length < 8) continue;
+        if (!phone.startsWith("91")) phone = "91" + phone.slice(-10);
+
+        const bdayMD = bday.substring(5);
+        const firstName = name.split(" ")[0] || "Friend";
+
+        if (bdayMD === todayMD) {
+          const { sendTemplate } = require("./whatsapp");
+          await sendTemplate(phone, "birthday_wishes", [firstName]);
+          birthdayCount++;
+          console.log(`🎂 Birthday template sent to ${phone} (${name})`);
+          await new Promise(r => setTimeout(r, 500));
+        } else if (bdayMD === in15MD) {
+          const { sendTemplate } = require("./whatsapp");
+          await sendTemplate(phone, "birthday_advance_wishes", [firstName]);
+          reminderCount++;
+          console.log(`⏰ 15-day birthday reminder template sent to ${phone} (${name})`);
+          await new Promise(r => setTimeout(r, 500));
+        }
+      } catch(rowErr) { /* skip bad row */ }
+    }
+
+    console.log(`🎂 Birthday cron done: ${birthdayCount} birthday, ${reminderCount} reminders`);
+    if (birthdayCount + reminderCount > 0) {
+      try {
+        const { sendMessage: waAdmin } = require("./whatsapp");
+        const ADMIN = process.env.ADMIN_PHONE || "919816003322";
+        await waAdmin(ADMIN, `🎂 *BIRTHDAY CRON REPORT*\n\n🎉 Birthday wishes sent: ${birthdayCount}\n⏰ 15-day reminders sent: ${reminderCount}`);
+      } catch(e) {}
+    }
+  } catch(err) {
+    console.error("Birthday cron error:", err.message);
+  }
+}
+
+// Run at 9:00 AM IST daily
+cron.schedule("0 9 * * *", sendBirthdayMessages, { timezone: "Asia/Kolkata" });
+console.log("🎂 Birthday wishes cron scheduled at 9:00 AM IST");
 
 // ── AC STATUS REMINDER — every 2 hours ─────────────────────────
 const AC_REMINDER_PHONE = "918627038322";
